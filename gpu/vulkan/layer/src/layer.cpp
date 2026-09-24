@@ -5,6 +5,8 @@
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 
+#include "passthrough_pipeline.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -107,6 +109,7 @@ struct SwapchainState {
 
     std::vector<VkImage> images;
     std::vector<CopySlot> copy_slots;
+    std::unique_ptr<ofg::vulkan::VulkanPassthroughPipeline> passthrough;
 
     VkCommandPool command_pool = VK_NULL_HANDLE;
     VkQueue copy_queue = VK_NULL_HANDLE;
@@ -116,6 +119,7 @@ struct SwapchainState {
     bool copy_skip_logged = false;
     bool first_copy_logged = false;
     bool first_copy_completed_logged = false;
+    bool first_passthrough_logged = false;
     bool first_present_logged = false;
 };
 
@@ -340,6 +344,8 @@ void destroy_copy_resources_unchecked(
     const DeviceDispatch& dispatch,
     SwapchainState& state,
     std::vector<VkSemaphore>* retired_present_semaphores = nullptr) noexcept {
+    state.passthrough.reset();
+
     for (auto& slot : state.copy_slots) {
         if (slot.copy_complete != VK_NULL_HANDLE) {
             if (retired_present_semaphores != nullptr &&
@@ -520,6 +526,12 @@ void retire_swapchain_copy_resources(
     state.copy_queue = queue;
     state.copy_queue_family = queue_state.family_index;
 
+    const bool enable_passthrough =
+        ofg::vulkan::VulkanPassthroughPipeline::build_available() &&
+        (queue_state.capabilities & VK_QUEUE_COMPUTE_BIT) != 0 &&
+        ofg::vulkan::VulkanPassthroughPipeline::supports_source_format(
+            state.format);
+
     const VkCommandPoolCreateInfo pool_info{
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .pNext = nullptr,
@@ -561,7 +573,11 @@ void retire_swapchain_copy_resources(
             .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .usage =
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                (enable_passthrough
+                    ? VK_IMAGE_USAGE_SAMPLED_BIT
+                    : 0),
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = nullptr,
@@ -695,6 +711,41 @@ void retire_swapchain_copy_resources(
                 "creating a fence.");
             destroy_copy_resources(dispatch, state);
             return false;
+        }
+    }
+
+    if (enable_passthrough) {
+        std::vector<VkImage> source_images;
+        source_images.reserve(state.copy_slots.size());
+
+        for (const auto& slot : state.copy_slots) {
+            source_images.push_back(slot.destination);
+        }
+
+        auto passthrough =
+            std::make_unique<ofg::vulkan::VulkanPassthroughPipeline>();
+
+        if (passthrough->initialize(
+                dispatch.device,
+                dispatch.get_device_proc_addr,
+                dispatch.memory_properties,
+                state.extent,
+                state.format,
+                source_images)) {
+            state.passthrough = std::move(passthrough);
+
+            char compute_message[256]{};
+            std::snprintf(
+                compute_message,
+                sizeof(compute_message),
+                "[OpenFrameGen] Vulkan compute pass-through ready: "
+                "%zu output images, local size=8x8.",
+                state.copy_slots.size());
+            log_message(compute_message);
+        } else {
+            log_message(
+                "[OpenFrameGen] Vulkan compute pass-through initialization "
+                "failed; frame copy remains active.");
         }
     }
 
@@ -858,6 +909,14 @@ void retire_swapchain_copy_resources(
         nullptr,
         1,
         &restore_source);
+
+    if (state.passthrough != nullptr &&
+        state.passthrough->ready() &&
+        !state.passthrough->record(
+            slot.command_buffer,
+            image_index)) {
+        return false;
+    }
 
     return dispatch.end_command_buffer(
                slot.command_buffer) == VK_SUCCESS;
@@ -1708,6 +1767,15 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                 state->extent.height,
                                 format_name(state->format));
                             log_message(message);
+                        }
+
+                        if (state->passthrough != nullptr &&
+                            state->passthrough->ready() &&
+                            !state->first_passthrough_logged) {
+                            state->first_passthrough_logged = true;
+                            log_message(
+                                "[OpenFrameGen] First Vulkan compute "
+                                "pass-through submitted.");
                         }
                     } else {
                         log_message(
