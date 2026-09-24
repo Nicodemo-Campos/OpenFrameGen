@@ -345,7 +345,18 @@ void destroy_copy_resources(
     const QueueState& queue_state,
     SwapchainState& state) {
     if (state.copy_initialized) {
-        return true;
+        if (state.copy_queue == queue &&
+            state.copy_queue_family == queue_state.family_index) {
+            return true;
+        }
+
+        if (!state.copy_skip_logged) {
+            log_message(
+                "[OpenFrameGen] Frame copy skipped: presentation queue "
+                "changed after copy resources were initialized.");
+            state.copy_skip_logged = true;
+        }
+        return false;
     }
 
     if ((state.image_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0) {
