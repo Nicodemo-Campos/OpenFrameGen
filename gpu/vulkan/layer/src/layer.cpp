@@ -87,6 +87,7 @@ struct CopySlot {
     VkFence fence = VK_NULL_HANDLE;
     bool has_submission = false;
     bool used_for_present = false;
+    bool command_buffer_recorded = false;
 };
 
 struct SwapchainState {
@@ -709,19 +710,26 @@ void retire_swapchain_copy_resources(
         return false;
     }
 
-    log_message(
-        "[OpenFrameGen][debug] record_copy: vkResetCommandBuffer.");
-
-    if (dispatch.reset_command_buffer(
-            slot.command_buffer,
-            0) != VK_SUCCESS) {
+    if (slot.command_buffer_recorded) {
         log_message(
-            "[OpenFrameGen][debug] record_copy: vkResetCommandBuffer failed.");
-        return false;
-    }
+            "[OpenFrameGen][debug] record_copy: vkResetCommandBuffer.");
 
-    log_message(
-        "[OpenFrameGen][debug] record_copy: vkResetCommandBuffer ok.");
+        if (dispatch.reset_command_buffer(
+                slot.command_buffer,
+                0) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen][debug] record_copy: "
+                "vkResetCommandBuffer failed.");
+            return false;
+        }
+
+        log_message(
+            "[OpenFrameGen][debug] record_copy: vkResetCommandBuffer ok.");
+    } else {
+        log_message(
+            "[OpenFrameGen][debug] record_copy: first use, "
+            "skipping vkResetCommandBuffer.");
+    }
 
     const VkCommandBufferBeginInfo begin_info{
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -880,6 +888,10 @@ void retire_swapchain_copy_resources(
 
     const VkResult end_result =
         dispatch.end_command_buffer(slot.command_buffer);
+
+    if (end_result == VK_SUCCESS) {
+        slot.command_buffer_recorded = true;
+    }
 
     log_message(
         end_result == VK_SUCCESS
