@@ -119,3 +119,28 @@ The layer now observes:
 - the first `vkQueuePresentKHR` that references each tracked swapchain.
 
 This records the swapchain extent, image format, present mode, requested minimum image count, actual discovered image count and image-usage flags without modifying the application's images or synchronization.
+
+
+## Frame copy prototype
+
+The frame-copy milestone inserts one queue submission before presentation when all of these conditions are true:
+
+- exactly one swapchain is being presented;
+- the swapchain exposes `VK_IMAGE_USAGE_TRANSFER_SRC_BIT`;
+- the present queue has been observed through `vkGetDeviceQueue` or `vkGetDeviceQueue2`;
+- swapchain image handles have already been discovered.
+
+For each swapchain image, OpenFrameGen creates an OFG-owned `VkImage`, GPU memory, a command buffer, a binary semaphore and a fence. The copy submission waits on the application's original present semaphores, copies the selected swapchain image, signals OFG's semaphore, and presentation waits on that semaphore.
+
+The destination image remains internal to OFG and is not displayed or read back yet.
+
+### Expected test log
+
+With `vkcube` and `OFG_LOG_FILE` enabled, a successful prototype should include:
+
+```text
+[OpenFrameGen] Frame copy resources ready: 3 OFG-owned images, queue family=...
+[OpenFrameGen] First GPU frame copy submitted: image=..., 500x500, format=B8G8R8A8_UNORM.
+```
+
+If the application keeps rendering normally after those messages, the first GPU-side frame copy path is working.
