@@ -112,3 +112,36 @@ Remove-Item Env:OFG_LOG_FILE -ErrorAction SilentlyContinue
 
 Do not run development layers against anti-cheat protected online games.
 Use controlled Vulkan samples during early layer development.
+
+
+## Swapchain recreation test
+
+Run the validation workflow above, then repeatedly resize the `vkcube`
+window for roughly 10 to 15 seconds. Include both larger and smaller sizes.
+
+The OpenFrameGen log should show multiple swapchain generations, for example:
+
+```text
+[OpenFrameGen] Swapchain #1 created: 500x500, ...
+[OpenFrameGen] First present for swapchain #1: ...
+[OpenFrameGen] Frame copy resources ready: ...
+[OpenFrameGen] First GPU frame copy completed.
+[OpenFrameGen] Swapchain #1 destroyed: 500x500, images=3.
+[OpenFrameGen] Swapchain #2 created: 900x650, ...
+[OpenFrameGen] First present for swapchain #2: ...
+[OpenFrameGen] Frame copy resources ready: ...
+[OpenFrameGen] First GPU frame copy completed.
+```
+
+Exact dimensions and the order of destruction versus creation can vary by WSI
+implementation. The important requirements are:
+
+- a new swapchain generation is observed after recreation;
+- OFG creates a new set of copy resources for the new swapchain;
+- frame copies resume and complete;
+- the application continues rendering normally;
+- the validation log contains no VUIDs, synchronization hazards, warnings, or
+  object-lifetime errors attributable to OFG.
+
+After the resize stress pass, close `vkcube` normally and inspect both logs
+again so destruction-time validation messages are not missed.
