@@ -1342,15 +1342,15 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             &slot.fence,
                             VK_TRUE,
                             UINT64_MAX) == VK_SUCCESS &&
-                        dispatch.reset_fences(
-                            dispatch.device,
-                            1,
-                            &slot.fence) == VK_SUCCESS &&
                         record_copy_commands(
                             dispatch,
                             state,
                             image_index,
-                            slot)) {
+                            slot) &&
+                        dispatch.reset_fences(
+                            dispatch.device,
+                            1,
+                            &slot.fence) == VK_SUCCESS) {
                         std::vector<VkPipelineStageFlags> wait_stages(
                             present_info->waitSemaphoreCount,
                             VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -1396,6 +1396,13 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                     format_name(state.format));
                                 log_message(message);
                             }
+                        } else {
+                            log_message(
+                                "[OpenFrameGen] Frame copy submit failed; "
+                                "disabling copy resources for this "
+                                "swapchain.");
+                            destroy_copy_resources(dispatch, state);
+                            state.copy_skip_logged = true;
                         }
                     }
                 }
