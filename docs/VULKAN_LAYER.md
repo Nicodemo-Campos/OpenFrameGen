@@ -63,6 +63,16 @@ $env:VK_INSTANCE_LAYERS = "VK_LAYER_OPENFRAMEGEN_framegen"
 vulkaninfo --summary
 ```
 
+For GUI applications on Windows, set `OFG_LOG_FILE` because their stderr output may not be visible in PowerShell:
+
+```powershell
+$env:OFG_LOG_FILE = (Join-Path (Get-Location) "ofg-layer.log")
+Remove-Item $env:OFG_LOG_FILE -ErrorAction SilentlyContinue
+vkcube
+Start-Sleep -Seconds 2
+Get-Content $env:OFG_LOG_FILE
+```
+
 During instance/device creation, the development layer writes diagnostic messages to stderr.
 
 A program that actually presents through Vulkan should eventually produce:
@@ -78,6 +88,7 @@ After testing:
 ```powershell
 Remove-Item Env:VK_INSTANCE_LAYERS -ErrorAction SilentlyContinue
 Remove-Item Env:VK_LAYER_PATH -ErrorAction SilentlyContinue
+Remove-Item Env:OFG_LOG_FILE -ErrorAction SilentlyContinue
 ```
 
 ## Scope of this milestone
