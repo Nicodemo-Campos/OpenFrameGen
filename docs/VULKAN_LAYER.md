@@ -78,8 +78,13 @@ During instance/device creation, the development layer writes diagnostic message
 A program that actually presents through Vulkan should eventually produce:
 
 ```text
+[OpenFrameGen] Swapchain created: 1280x720, format=B8G8R8A8_UNORM(...), present=FIFO(...), minImages=...
+[OpenFrameGen] Swapchain images discovered: ...
 [OpenFrameGen] First vkQueuePresentKHR intercepted.
+[OpenFrameGen] First present for tracked swapchain: 1280x720, format=..., present=..., images=...
 ```
+
+The exact resolution, image count, format and present mode depend on the application and driver.
 
 `vulkaninfo` does not necessarily present frames, so not seeing the presentation message there is expected.
 
@@ -102,4 +107,15 @@ This code does not yet:
 - upscale frames;
 - install itself as an implicit layer.
 
-Those features will be introduced only after pass-through presentation is stable.
+Those features will be introduced only after pass-through presentation and swapchain tracking are stable.
+
+## Swapchain tracking milestone
+
+The layer now observes:
+
+- `vkCreateSwapchainKHR`;
+- `vkGetSwapchainImagesKHR`;
+- `vkDestroySwapchainKHR`;
+- the first `vkQueuePresentKHR` that references each tracked swapchain.
+
+This records the swapchain extent, image format, present mode, requested minimum image count, actual discovered image count and image-usage flags without modifying the application's images or synchronization.
