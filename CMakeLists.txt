@@ -26,13 +26,24 @@ if(OFG_BUILD_CLI)
 endif()
 
 if(OFG_BUILD_VULKAN_LAYER)
+    set(OFG_VULKAN_HEADER_HINTS
+        "$ENV{VULKAN_SDK}/Include"
+        "$ENV{VULKAN_SDK}/include"
+        ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES}
+    )
+
+    if(WIN32)
+        list(APPEND OFG_VULKAN_HEADER_HINTS
+            "C:/msys64/ucrt64/include"
+            "C:/msys64/mingw64/include"
+            "C:/msys64/clang64/include"
+        )
+    endif()
+
     find_path(
         OFG_VULKAN_INCLUDE_DIR
         NAMES vulkan/vk_layer.h
-        HINTS
-            "$ENV{VULKAN_SDK}/Include"
-            "$ENV{VULKAN_SDK}/include"
-            ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES}
+        HINTS ${OFG_VULKAN_HEADER_HINTS}
     )
 
     if(OFG_VULKAN_INCLUDE_DIR)
