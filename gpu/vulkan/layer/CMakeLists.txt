@@ -33,10 +33,20 @@ foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
     )
 endforeach()
 
-set(
-    OFG_LAYER_LIBRARY_RELATIVE_PATH
-    "./openframegen_vulkan_layer${CMAKE_SHARED_LIBRARY_SUFFIX}"
-)
+if(WIN32)
+    # The Windows Vulkan loader identifies paths using backslashes.
+    # JSON requires each backslash to be escaped, so the configured
+    # manifest must contain ".\\openframegen_vulkan_layer.dll".
+    set(
+        OFG_LAYER_LIBRARY_RELATIVE_PATH
+        ".\\\\openframegen_vulkan_layer${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+else()
+    set(
+        OFG_LAYER_LIBRARY_RELATIVE_PATH
+        "./openframegen_vulkan_layer${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+endif()
 
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/manifest/VkLayer_OpenFrameGen.json.in"
