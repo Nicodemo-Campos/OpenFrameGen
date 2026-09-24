@@ -20,7 +20,7 @@ This roadmap describes direction, not release promises.
 - [x] Observe `vkQueuePresentKHR`
 - [x] Copy a presented image into OFG-owned GPU resources
 - [ ] Preserve synchronization correctness
-- [ ] Add validation-layer test instructions
+- [x] Add validation-layer test instructions
 
 ## Phase 2 — First image-processing pipeline
 

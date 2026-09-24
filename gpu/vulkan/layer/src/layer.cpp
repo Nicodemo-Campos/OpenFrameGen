@@ -23,6 +23,8 @@ struct InstanceDispatch {
     PFN_vkDestroyInstance destroy_instance = nullptr;
     PFN_vkGetPhysicalDeviceMemoryProperties
         get_physical_device_memory_properties = nullptr;
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties
+        get_physical_device_queue_family_properties = nullptr;
 };
 
 struct DeviceDispatch {
@@ -74,6 +76,7 @@ struct QueueState {
     std::uint32_t family_index = UINT32_MAX;
     std::uint32_t queue_index = 0;
     VkDeviceQueueCreateFlags flags = 0;
+    VkQueueFlags capabilities = 0;
 };
 
 struct CopySlot {
@@ -345,7 +348,18 @@ void destroy_copy_resources(
     const QueueState& queue_state,
     SwapchainState& state) {
     if (state.copy_initialized) {
-        return true;
+        if (state.copy_queue == queue &&
+            state.copy_queue_family == queue_state.family_index) {
+            return true;
+        }
+
+        if (!state.copy_skip_logged) {
+            log_message(
+                "[OpenFrameGen] Frame copy skipped: presentation queue "
+                "changed after copy resources were initialized.");
+            state.copy_skip_logged = true;
+        }
+        return false;
     }
 
     if ((state.image_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0) {
@@ -353,6 +367,21 @@ void destroy_copy_resources(
             log_message(
                 "[OpenFrameGen] Frame copy skipped: swapchain does not "
                 "support VK_IMAGE_USAGE_TRANSFER_SRC_BIT.");
+            state.copy_skip_logged = true;
+        }
+        return false;
+    }
+
+    constexpr VkQueueFlags copy_capabilities =
+        VK_QUEUE_GRAPHICS_BIT |
+        VK_QUEUE_COMPUTE_BIT |
+        VK_QUEUE_TRANSFER_BIT;
+
+    if ((queue_state.capabilities & copy_capabilities) == 0) {
+        if (!state.copy_skip_logged) {
+            log_message(
+                "[OpenFrameGen] Frame copy skipped: present queue family "
+                "does not support graphics, compute, or transfer commands.");
             state.copy_skip_logged = true;
         }
         return false;
@@ -839,6 +868,11 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
                 next_gipa(
                     *instance,
                     "vkGetPhysicalDeviceMemoryProperties")),
+        .get_physical_device_queue_family_properties =
+            reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
+                next_gipa(
+                    *instance,
+                    "vkGetPhysicalDeviceQueueFamilyProperties")),
     };
 
     {
@@ -1052,12 +1086,43 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue(
         queue);
 
     if (queue != nullptr && *queue != VK_NULL_HANDLE) {
+        VkQueueFlags capabilities = 0;
+
+        InstanceDispatch instance_dispatch{};
+        if (find_instance_dispatch(
+                dispatch_key(dispatch.physical_device),
+                instance_dispatch) &&
+            instance_dispatch
+                    .get_physical_device_queue_family_properties != nullptr) {
+            std::uint32_t family_count = 0;
+            instance_dispatch.get_physical_device_queue_family_properties(
+                dispatch.physical_device,
+                &family_count,
+                nullptr);
+
+            if (queue_family_index < family_count) {
+                std::vector<VkQueueFamilyProperties> properties(
+                    family_count);
+                instance_dispatch
+                    .get_physical_device_queue_family_properties(
+                        dispatch.physical_device,
+                        &family_count,
+                        properties.data());
+
+                if (queue_family_index < family_count) {
+                    capabilities =
+                        properties[queue_family_index].queueFlags;
+                }
+            }
+        }
+
         std::scoped_lock lock{g_state_mutex};
         g_queues[*queue] = QueueState{
             .device = device,
             .family_index = queue_family_index,
             .queue_index = queue_index,
             .flags = 0,
+            .capabilities = capabilities,
         };
     }
 }
@@ -1079,12 +1144,43 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue2(
     dispatch.get_device_queue2(device, queue_info, queue);
 
     if (queue != nullptr && *queue != VK_NULL_HANDLE) {
+        VkQueueFlags capabilities = 0;
+
+        InstanceDispatch instance_dispatch{};
+        if (find_instance_dispatch(
+                dispatch_key(dispatch.physical_device),
+                instance_dispatch) &&
+            instance_dispatch
+                    .get_physical_device_queue_family_properties != nullptr) {
+            std::uint32_t family_count = 0;
+            instance_dispatch.get_physical_device_queue_family_properties(
+                dispatch.physical_device,
+                &family_count,
+                nullptr);
+
+            if (queue_info->queueFamilyIndex < family_count) {
+                std::vector<VkQueueFamilyProperties> properties(
+                    family_count);
+                instance_dispatch
+                    .get_physical_device_queue_family_properties(
+                        dispatch.physical_device,
+                        &family_count,
+                        properties.data());
+
+                if (queue_info->queueFamilyIndex < family_count) {
+                    capabilities =
+                        properties[queue_info->queueFamilyIndex].queueFlags;
+                }
+            }
+        }
+
         std::scoped_lock lock{g_state_mutex};
         g_queues[*queue] = QueueState{
             .device = device,
             .family_index = queue_info->queueFamilyIndex,
             .queue_index = queue_info->queueIndex,
             .flags = queue_info->flags,
+            .capabilities = capabilities,
         };
     }
 }
