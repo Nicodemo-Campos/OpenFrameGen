@@ -86,6 +86,7 @@ struct CopySlot {
     VkSemaphore copy_complete = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     bool has_submission = false;
+    bool used_for_present = false;
 };
 
 struct SwapchainState {
@@ -120,6 +121,8 @@ std::unordered_map<void*, InstanceDispatch> g_instance_dispatch;
 std::unordered_map<void*, DeviceDispatch> g_device_dispatch;
 std::unordered_map<VkQueue, QueueState> g_queues;
 std::unordered_map<VkSwapchainKHR, SwapchainState> g_swapchains;
+std::unordered_map<void*, std::vector<VkSemaphore>>
+    g_retired_present_semaphores;
 
 std::atomic<PFN_vkGetInstanceProcAddr> g_next_global_gipa{nullptr};
 std::atomic<std::uint64_t> g_present_count{0};
@@ -327,25 +330,24 @@ template <typename Dispatchable>
     return true;
 }
 
-void destroy_copy_resources(
+void destroy_copy_resources_unchecked(
     const DeviceDispatch& dispatch,
-    SwapchainState& state) noexcept {
-    if (!wait_for_copy_submissions(dispatch, state) &&
-        state.copy_queue != VK_NULL_HANDLE &&
-        dispatch.queue_wait_idle != nullptr) {
-        log_message(
-            "[OpenFrameGen] Fence-scoped copy teardown failed; "
-            "falling back to vkQueueWaitIdle.");
-        dispatch.queue_wait_idle(state.copy_queue);
-    }
-
+    SwapchainState& state,
+    std::vector<VkSemaphore>* retired_present_semaphores = nullptr) noexcept {
     for (auto& slot : state.copy_slots) {
-        if (slot.copy_complete != VK_NULL_HANDLE &&
-            dispatch.destroy_semaphore != nullptr) {
-            dispatch.destroy_semaphore(
-                dispatch.device,
-                slot.copy_complete,
-                nullptr);
+        if (slot.copy_complete != VK_NULL_HANDLE) {
+            if (retired_present_semaphores != nullptr &&
+                slot.used_for_present) {
+                retired_present_semaphores->push_back(
+                    slot.copy_complete);
+            } else if (dispatch.destroy_semaphore != nullptr) {
+                dispatch.destroy_semaphore(
+                    dispatch.device,
+                    slot.copy_complete,
+                    nullptr);
+            }
+
+            slot.copy_complete = VK_NULL_HANDLE;
         }
 
         if (slot.fence != VK_NULL_HANDLE &&
@@ -387,6 +389,44 @@ void destroy_copy_resources(
     state.copy_queue = VK_NULL_HANDLE;
     state.copy_queue_family = UINT32_MAX;
     state.copy_initialized = false;
+}
+
+void destroy_copy_resources(
+    const DeviceDispatch& dispatch,
+    SwapchainState& state) noexcept {
+    const bool has_queue_references =
+        std::any_of(
+            state.copy_slots.begin(),
+            state.copy_slots.end(),
+            [](const CopySlot& slot) {
+                return slot.has_submission || slot.used_for_present;
+            });
+
+    if (has_queue_references &&
+        state.copy_queue != VK_NULL_HANDLE &&
+        dispatch.queue_wait_idle != nullptr) {
+        dispatch.queue_wait_idle(state.copy_queue);
+    }
+
+    destroy_copy_resources_unchecked(dispatch, state);
+}
+
+void retire_swapchain_copy_resources(
+    const DeviceDispatch& dispatch,
+    SwapchainState& state,
+    std::vector<VkSemaphore>& retired_present_semaphores) noexcept {
+    if (!wait_for_copy_submissions(dispatch, state)) {
+        log_message(
+            "[OpenFrameGen] Fence-scoped copy retirement failed; "
+            "falling back to vkQueueWaitIdle.");
+        destroy_copy_resources(dispatch, state);
+        return;
+    }
+
+    destroy_copy_resources_unchecked(
+        dispatch,
+        state,
+        &retired_present_semaphores);
 }
 
 [[nodiscard]] bool initialize_copy_resources(
@@ -1068,10 +1108,13 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
     const VkAllocationCallbacks* allocator) {
     DeviceDispatch dispatch{};
     std::vector<SwapchainState> swapchains;
+    std::vector<VkSemaphore> retired_present_semaphores;
+    const void* const_device_key = dispatch_key(device);
+    void* device_key = const_cast<void*>(const_device_key);
 
     {
         std::scoped_lock lock{g_state_mutex};
-        const auto it = g_device_dispatch.find(dispatch_key(device));
+        const auto it = g_device_dispatch.find(device_key);
 
         if (it != g_device_dispatch.end()) {
             dispatch = it->second;
@@ -1097,6 +1140,14 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
                 ++swapchain_it;
             }
         }
+
+        const auto retired_it =
+            g_retired_present_semaphores.find(device_key);
+        if (retired_it != g_retired_present_semaphores.end()) {
+            retired_present_semaphores =
+                std::move(retired_it->second);
+            g_retired_present_semaphores.erase(retired_it);
+        }
     }
 
     if (dispatch.device_wait_idle != nullptr) {
@@ -1104,7 +1155,18 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
     }
 
     for (auto& state : swapchains) {
-        destroy_copy_resources(dispatch, state);
+        destroy_copy_resources_unchecked(dispatch, state);
+    }
+
+    if (dispatch.destroy_semaphore != nullptr) {
+        for (VkSemaphore semaphore : retired_present_semaphores) {
+            if (semaphore != VK_NULL_HANDLE) {
+                dispatch.destroy_semaphore(
+                    device,
+                    semaphore,
+                    nullptr);
+            }
+        }
     }
 
     if (dispatch.destroy_device != nullptr) {
@@ -1320,8 +1382,23 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         }
     }
 
+    std::vector<VkSemaphore> retired_present_semaphores;
+
     if (tracked) {
-        destroy_copy_resources(dispatch, state);
+        retire_swapchain_copy_resources(
+            dispatch,
+            state,
+            retired_present_semaphores);
+    }
+
+    if (!retired_present_semaphores.empty()) {
+        std::scoped_lock lock{g_state_mutex};
+        auto& device_semaphores =
+            g_retired_present_semaphores[dispatch_key(device)];
+        device_semaphores.insert(
+            device_semaphores.end(),
+            retired_present_semaphores.begin(),
+            retired_present_semaphores.end());
     }
 
     dispatch.destroy_swapchain(device, swapchain, allocator);
@@ -1548,6 +1625,7 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             copy_complete = slot.copy_complete;
                             copy_submitted = true;
                             slot.has_submission = true;
+                            slot.used_for_present = true;
 
                             if (!state.first_copy_logged) {
                                 state.first_copy_logged = true;
