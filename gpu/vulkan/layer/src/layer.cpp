@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -92,6 +93,8 @@ struct CopySlot {
 };
 
 struct SwapchainState {
+    std::mutex mutex;
+
     VkDevice device = VK_NULL_HANDLE;
     std::uint64_t generation = 0;
     VkExtent2D extent{};
@@ -122,7 +125,8 @@ std::mutex g_log_mutex;
 std::unordered_map<void*, InstanceDispatch> g_instance_dispatch;
 std::unordered_map<void*, DeviceDispatch> g_device_dispatch;
 std::unordered_map<VkQueue, QueueState> g_queues;
-std::unordered_map<VkSwapchainKHR, SwapchainState> g_swapchains;
+std::unordered_map<VkSwapchainKHR, std::shared_ptr<SwapchainState>>
+    g_swapchains;
 std::unordered_map<void*, std::vector<VkSemaphore>>
     g_retired_present_semaphores;
 
@@ -1130,7 +1134,7 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
     VkDevice device,
     const VkAllocationCallbacks* allocator) {
     DeviceDispatch dispatch{};
-    std::vector<SwapchainState> swapchains;
+    std::vector<std::shared_ptr<SwapchainState>> swapchains;
     std::vector<VkSemaphore> retired_present_semaphores;
     void* device_key = dispatch_key(device);
 
@@ -1154,9 +1158,9 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
 
         for (auto swapchain_it = g_swapchains.begin();
              swapchain_it != g_swapchains.end();) {
-            if (swapchain_it->second.device == device) {
-                swapchains.push_back(
-                    std::move(swapchain_it->second));
+            if (swapchain_it->second != nullptr &&
+                swapchain_it->second->device == device) {
+                swapchains.push_back(swapchain_it->second);
                 swapchain_it = g_swapchains.erase(swapchain_it);
             } else {
                 ++swapchain_it;
@@ -1176,8 +1180,13 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
         dispatch.device_wait_idle(device);
     }
 
-    for (auto& state : swapchains) {
-        destroy_copy_resources_unchecked(dispatch, state);
+    for (const auto& state : swapchains) {
+        if (state == nullptr) {
+            continue;
+        }
+
+        std::scoped_lock state_lock{state->mutex};
+        destroy_copy_resources_unchecked(dispatch, *state);
     }
 
     if (dispatch.destroy_semaphore != nullptr) {
@@ -1342,22 +1351,22 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         return result;
     }
 
-    SwapchainState state{};
-    state.device = device;
-    state.generation =
+    auto state = std::make_shared<SwapchainState>();
+    state->device = device;
+    state->generation =
         g_swapchain_generation.fetch_add(
             1,
             std::memory_order_relaxed) + 1;
-    state.extent = create_info->imageExtent;
-    state.format = create_info->imageFormat;
-    state.color_space = create_info->imageColorSpace;
-    state.present_mode = create_info->presentMode;
-    state.image_usage = create_info->imageUsage;
-    state.min_image_count = create_info->minImageCount;
+    state->extent = create_info->imageExtent;
+    state->format = create_info->imageFormat;
+    state->color_space = create_info->imageColorSpace;
+    state->present_mode = create_info->presentMode;
+    state->image_usage = create_info->imageUsage;
+    state->min_image_count = create_info->minImageCount;
 
     {
         std::scoped_lock lock{g_state_mutex};
-        g_swapchains[*swapchain] = std::move(state);
+        g_swapchains[*swapchain] = state;
     }
 
     char message[512]{};
@@ -1366,7 +1375,7 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         sizeof(message),
         "[OpenFrameGen] Swapchain #%llu created: %ux%u, "
         "format=%s(%d), present=%s(%d), minImages=%u, usage=0x%08x.",
-        static_cast<unsigned long long>(state.generation),
+        static_cast<unsigned long long>(state->generation),
         create_info->imageExtent.width,
         create_info->imageExtent.height,
         format_name(create_info->imageFormat),
@@ -1390,27 +1399,38 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         return;
     }
 
-    SwapchainState state{};
-    bool tracked = false;
+    std::shared_ptr<SwapchainState> state;
 
     {
         std::scoped_lock lock{g_state_mutex};
         const auto it = g_swapchains.find(swapchain);
 
         if (it != g_swapchains.end()) {
-            state = std::move(it->second);
-            tracked = true;
+            state = it->second;
             g_swapchains.erase(it);
         }
     }
 
     std::vector<VkSemaphore> retired_present_semaphores;
+    std::uint64_t generation = 0;
+    VkExtent2D extent{};
+    std::uint32_t image_count = 0;
 
-    if (tracked) {
+    if (state != nullptr) {
+        std::scoped_lock state_lock{state->mutex};
+
         retire_swapchain_copy_resources(
             dispatch,
-            state,
+            *state,
             retired_present_semaphores);
+
+        generation = state->generation;
+        extent = state->extent;
+        image_count = state->image_count;
+
+        dispatch.destroy_swapchain(device, swapchain, allocator);
+    } else {
+        dispatch.destroy_swapchain(device, swapchain, allocator);
     }
 
     if (!retired_present_semaphores.empty()) {
@@ -1423,18 +1443,16 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
             retired_present_semaphores.end());
     }
 
-    dispatch.destroy_swapchain(device, swapchain, allocator);
-
-    if (tracked) {
+    if (state != nullptr) {
         char message[256]{};
         std::snprintf(
             message,
             sizeof(message),
             "[OpenFrameGen] Swapchain #%llu destroyed: %ux%u, images=%u.",
-            static_cast<unsigned long long>(state.generation),
-            state.extent.width,
-            state.extent.height,
-            state.image_count);
+            static_cast<unsigned long long>(generation),
+            extent.width,
+            extent.height,
+            image_count);
         log_message(message);
     }
 }
@@ -1448,6 +1466,22 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgGetSwapchainImagesKHR(
     if (!find_device_dispatch(dispatch_key(device), dispatch) ||
         dispatch.get_swapchain_images == nullptr) {
         return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    std::shared_ptr<SwapchainState> state;
+
+    {
+        std::scoped_lock lock{g_state_mutex};
+        const auto it = g_swapchains.find(swapchain);
+
+        if (it != g_swapchains.end()) {
+            state = it->second;
+        }
+    }
+
+    std::unique_lock<std::mutex> state_lock;
+    if (state != nullptr) {
+        state_lock = std::unique_lock<std::mutex>{state->mutex};
     }
 
     const VkResult result =
@@ -1465,23 +1499,18 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgGetSwapchainImagesKHR(
     bool changed = false;
     std::uint32_t requested_minimum = 0;
 
-    {
-        std::scoped_lock lock{g_state_mutex};
-        const auto it = g_swapchains.find(swapchain);
+    if (state != nullptr) {
+        requested_minimum = state->min_image_count;
 
-        if (it != g_swapchains.end()) {
-            requested_minimum = it->second.min_image_count;
+        if (state->image_count != *image_count) {
+            state->image_count = *image_count;
+            changed = true;
+        }
 
-            if (it->second.image_count != *image_count) {
-                it->second.image_count = *image_count;
-                changed = true;
-            }
-
-            if (images != nullptr) {
-                it->second.images.assign(
-                    images,
-                    images + *image_count);
-            }
+        if (images != nullptr) {
+            state->images.assign(
+                images,
+                images + *image_count);
         }
     }
 
@@ -1525,155 +1554,168 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
         return dispatch.queue_present(queue, present_info);
     }
 
-    VkSemaphore copy_complete = VK_NULL_HANDLE;
-    bool copy_submitted = false;
+    QueueState queue_state{};
+    bool queue_known = false;
+    std::shared_ptr<SwapchainState> state;
 
     {
         std::scoped_lock lock{g_state_mutex};
 
         const auto queue_it = g_queues.find(queue);
+        if (queue_it != g_queues.end()) {
+            queue_state = queue_it->second;
+            queue_known = true;
+        }
+
         const auto swapchain_it =
             g_swapchains.find(present_info->pSwapchains[0]);
-
         if (swapchain_it != g_swapchains.end()) {
-            auto& state = swapchain_it->second;
+            state = swapchain_it->second;
+        }
+    }
 
-            if (!state.first_present_logged) {
-                state.first_present_logged = true;
+    if (state == nullptr) {
+        return dispatch.queue_present(queue, present_info);
+    }
 
-                char message[384]{};
-                std::snprintf(
-                    message,
-                    sizeof(message),
-                    "[OpenFrameGen] First present for swapchain #%llu: "
-                    "%ux%u, format=%s, present=%s, images=%u.",
-                    static_cast<unsigned long long>(state.generation),
-                    state.extent.width,
-                    state.extent.height,
-                    format_name(state.format),
-                    present_mode_name(state.present_mode),
-                    state.image_count);
-                log_message(message);
-            }
+    std::scoped_lock state_lock{state->mutex};
 
-            if (queue_it == g_queues.end()) {
-                if (!state.copy_skip_logged) {
+    VkSemaphore copy_complete = VK_NULL_HANDLE;
+    bool copy_submitted = false;
+
+    if (!state->first_present_logged) {
+        state->first_present_logged = true;
+
+        char message[384]{};
+        std::snprintf(
+            message,
+            sizeof(message),
+            "[OpenFrameGen] First present for swapchain #%llu: "
+            "%ux%u, format=%s, present=%s, images=%u.",
+            static_cast<unsigned long long>(state->generation),
+            state->extent.width,
+            state->extent.height,
+            format_name(state->format),
+            present_mode_name(state->present_mode),
+            state->image_count);
+        log_message(message);
+    }
+
+    if (!queue_known) {
+        if (!state->copy_skip_logged) {
+            log_message(
+                "[OpenFrameGen] Frame copy skipped: present queue "
+                "family is unknown.");
+            state->copy_skip_logged = true;
+        }
+    } else if (queue_state.device != state->device) {
+        if (!state->copy_skip_logged) {
+            log_message(
+                "[OpenFrameGen] Frame copy skipped: queue/device "
+                "association mismatch.");
+            state->copy_skip_logged = true;
+        }
+    } else if (
+        initialize_copy_resources(
+            dispatch,
+            queue,
+            queue_state,
+            *state)) {
+        const std::uint32_t image_index =
+            present_info->pImageIndices[0];
+
+        if (image_index < state->copy_slots.size() &&
+            image_index < state->images.size()) {
+            auto& slot = state->copy_slots[image_index];
+
+            if (dispatch.wait_for_fences != nullptr &&
+                dispatch.reset_fences != nullptr &&
+                dispatch.queue_submit != nullptr) {
+                const VkResult wait_result =
+                    dispatch.wait_for_fences(
+                        dispatch.device,
+                        1,
+                        &slot.fence,
+                        VK_TRUE,
+                        UINT64_MAX);
+
+                if (wait_result == VK_SUCCESS &&
+                    slot.has_submission &&
+                    !state->first_copy_completed_logged) {
+                    state->first_copy_completed_logged = true;
                     log_message(
-                        "[OpenFrameGen] Frame copy skipped: present queue "
-                        "family is unknown.");
-                    state.copy_skip_logged = true;
+                        "[OpenFrameGen] First GPU frame copy "
+                        "completed.");
                 }
-            } else if (
-                queue_it->second.device != state.device) {
-                if (!state.copy_skip_logged) {
-                    log_message(
-                        "[OpenFrameGen] Frame copy skipped: queue/device "
-                        "association mismatch.");
-                    state.copy_skip_logged = true;
+
+                if (wait_result == VK_SUCCESS) {
+                    slot.has_submission = false;
                 }
-            } else if (
-                initialize_copy_resources(
-                    dispatch,
-                    queue,
-                    queue_it->second,
-                    state)) {
-                const std::uint32_t image_index =
-                    present_info->pImageIndices[0];
 
-                if (image_index < state.copy_slots.size() &&
-                    image_index < state.images.size()) {
-                    auto& slot = state.copy_slots[image_index];
+                if (wait_result == VK_SUCCESS &&
+                    record_copy_commands(
+                        dispatch,
+                        *state,
+                        image_index,
+                        slot) &&
+                    dispatch.reset_fences(
+                        dispatch.device,
+                        1,
+                        &slot.fence) == VK_SUCCESS) {
+                    std::vector<VkPipelineStageFlags> wait_stages(
+                        present_info->waitSemaphoreCount,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-                    if (dispatch.wait_for_fences != nullptr &&
-                        dispatch.reset_fences != nullptr &&
-                        dispatch.queue_submit != nullptr) {
-                        const VkResult wait_result =
-                            dispatch.wait_for_fences(
-                                dispatch.device,
-                                1,
-                                &slot.fence,
-                                VK_TRUE,
-                                UINT64_MAX);
-
-                        if (wait_result == VK_SUCCESS &&
-                            slot.has_submission &&
-                            !state.first_copy_completed_logged) {
-                            state.first_copy_completed_logged = true;
-                            log_message(
-                                "[OpenFrameGen] First GPU frame copy "
-                                "completed.");
-                        }
-
-                        if (wait_result == VK_SUCCESS) {
-                            slot.has_submission = false;
-                        }
-
-                        if (wait_result == VK_SUCCESS &&
-                            record_copy_commands(
-                                dispatch,
-                                state,
-                                image_index,
-                                slot) &&
-                            dispatch.reset_fences(
-                                dispatch.device,
-                                1,
-                                &slot.fence) == VK_SUCCESS) {
-                        std::vector<VkPipelineStageFlags> wait_stages(
+                    const VkSubmitInfo submit_info{
+                        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                        .pNext = nullptr,
+                        .waitSemaphoreCount =
                             present_info->waitSemaphoreCount,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT);
+                        .pWaitSemaphores =
+                            present_info->pWaitSemaphores,
+                        .pWaitDstStageMask =
+                            wait_stages.empty()
+                                ? nullptr
+                                : wait_stages.data(),
+                        .commandBufferCount = 1,
+                        .pCommandBuffers = &slot.command_buffer,
+                        .signalSemaphoreCount = 1,
+                        .pSignalSemaphores = &slot.copy_complete,
+                    };
 
-                        const VkSubmitInfo submit_info{
-                            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                            .pNext = nullptr,
-                            .waitSemaphoreCount =
-                                present_info->waitSemaphoreCount,
-                            .pWaitSemaphores =
-                                present_info->pWaitSemaphores,
-                            .pWaitDstStageMask =
-                                wait_stages.empty()
-                                    ? nullptr
-                                    : wait_stages.data(),
-                            .commandBufferCount = 1,
-                            .pCommandBuffers = &slot.command_buffer,
-                            .signalSemaphoreCount = 1,
-                            .pSignalSemaphores = &slot.copy_complete,
-                        };
+                    if (dispatch.queue_submit(
+                            queue,
+                            1,
+                            &submit_info,
+                            slot.fence) == VK_SUCCESS) {
+                        copy_complete = slot.copy_complete;
+                        copy_submitted = true;
+                        slot.has_submission = true;
+                        slot.used_for_present = true;
 
-                        if (dispatch.queue_submit(
-                                queue,
-                                1,
-                                &submit_info,
-                                slot.fence) == VK_SUCCESS) {
-                            copy_complete = slot.copy_complete;
-                            copy_submitted = true;
-                            slot.has_submission = true;
-                            slot.used_for_present = true;
+                        if (!state->first_copy_logged) {
+                            state->first_copy_logged = true;
 
-                            if (!state.first_copy_logged) {
-                                state.first_copy_logged = true;
-
-                                char message[320]{};
-                                std::snprintf(
-                                    message,
-                                    sizeof(message),
-                                    "[OpenFrameGen] First GPU frame copy "
-                                    "submitted: image=%u, %ux%u, "
-                                    "format=%s.",
-                                    image_index,
-                                    state.extent.width,
-                                    state.extent.height,
-                                    format_name(state.format));
-                                log_message(message);
-                            }
-                            } else {
-                                log_message(
-                                    "[OpenFrameGen] Frame copy submit "
-                                    "failed; disabling copy resources for "
-                                    "this swapchain.");
-                                destroy_copy_resources(dispatch, state);
-                                state.copy_skip_logged = true;
-                            }
+                            char message[320]{};
+                            std::snprintf(
+                                message,
+                                sizeof(message),
+                                "[OpenFrameGen] First GPU frame copy "
+                                "submitted: image=%u, %ux%u, "
+                                "format=%s.",
+                                image_index,
+                                state->extent.width,
+                                state->extent.height,
+                                format_name(state->format));
+                            log_message(message);
                         }
+                    } else {
+                        log_message(
+                            "[OpenFrameGen] Frame copy submit "
+                            "failed; disabling copy resources for "
+                            "this swapchain.");
+                        destroy_copy_resources(dispatch, *state);
+                        state->copy_skip_logged = true;
                     }
                 }
             }
