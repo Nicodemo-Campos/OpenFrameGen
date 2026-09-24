@@ -90,6 +90,7 @@ struct CopySlot {
 
 struct SwapchainState {
     VkDevice device = VK_NULL_HANDLE;
+    std::uint64_t generation = 0;
     VkExtent2D extent{};
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkColorSpaceKHR color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
@@ -122,6 +123,7 @@ std::unordered_map<VkSwapchainKHR, SwapchainState> g_swapchains;
 
 std::atomic<PFN_vkGetInstanceProcAddr> g_next_global_gipa{nullptr};
 std::atomic<std::uint64_t> g_present_count{0};
+std::atomic<std::uint64_t> g_swapchain_generation{0};
 
 void log_message(const char* message) noexcept {
     if (message == nullptr) {
@@ -1213,6 +1215,10 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
 
     SwapchainState state{};
     state.device = device;
+    state.generation =
+        g_swapchain_generation.fetch_add(
+            1,
+            std::memory_order_relaxed) + 1;
     state.extent = create_info->imageExtent;
     state.format = create_info->imageFormat;
     state.color_space = create_info->imageColorSpace;
@@ -1229,8 +1235,9 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
     std::snprintf(
         message,
         sizeof(message),
-        "[OpenFrameGen] Swapchain created: %ux%u, format=%s(%d), "
-        "present=%s(%d), minImages=%u, usage=0x%08x.",
+        "[OpenFrameGen] Swapchain #%llu created: %ux%u, "
+        "format=%s(%d), present=%s(%d), minImages=%u, usage=0x%08x.",
+        static_cast<unsigned long long>(state.generation),
         create_info->imageExtent.width,
         create_info->imageExtent.height,
         format_name(create_info->imageFormat),
@@ -1279,7 +1286,8 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         std::snprintf(
             message,
             sizeof(message),
-            "[OpenFrameGen] Swapchain destroyed: %ux%u, images=%u.",
+            "[OpenFrameGen] Swapchain #%llu destroyed: %ux%u, images=%u.",
+            static_cast<unsigned long long>(state.generation),
             state.extent.width,
             state.extent.height,
             state.image_count);
@@ -1393,8 +1401,9 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                 std::snprintf(
                     message,
                     sizeof(message),
-                    "[OpenFrameGen] First present for tracked swapchain: "
+                    "[OpenFrameGen] First present for swapchain #%llu: "
                     "%ux%u, format=%s, present=%s, images=%u.",
+                    static_cast<unsigned long long>(state.generation),
                     state.extent.width,
                     state.extent.height,
                     format_name(state.format),
