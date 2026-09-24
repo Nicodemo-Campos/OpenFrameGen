@@ -144,3 +144,10 @@ With `vkcube` and `OFG_LOG_FILE` enabled, a successful prototype should include:
 ```
 
 If the application keeps rendering normally after those messages, the first GPU-side frame copy path is working.
+
+
+## Validation
+
+Before marking synchronization behavior as stable, run the Khronos Validation Layer below OpenFrameGen so OFG-generated barriers, copies, semaphores, fences and object lifetimes are checked.
+
+See [VULKAN_VALIDATION.md](VULKAN_VALIDATION.md) for the Windows PowerShell workflow and cleanup steps.
