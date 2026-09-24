@@ -709,11 +709,19 @@ void retire_swapchain_copy_resources(
         return false;
     }
 
+    log_message(
+        "[OpenFrameGen][debug] record_copy: vkResetCommandBuffer.");
+
     if (dispatch.reset_command_buffer(
             slot.command_buffer,
             0) != VK_SUCCESS) {
+        log_message(
+            "[OpenFrameGen][debug] record_copy: vkResetCommandBuffer failed.");
         return false;
     }
+
+    log_message(
+        "[OpenFrameGen][debug] record_copy: vkResetCommandBuffer ok.");
 
     const VkCommandBufferBeginInfo begin_info{
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -722,11 +730,19 @@ void retire_swapchain_copy_resources(
         .pInheritanceInfo = nullptr,
     };
 
+    log_message(
+        "[OpenFrameGen][debug] record_copy: vkBeginCommandBuffer.");
+
     if (dispatch.begin_command_buffer(
             slot.command_buffer,
             &begin_info) != VK_SUCCESS) {
+        log_message(
+            "[OpenFrameGen][debug] record_copy: vkBeginCommandBuffer failed.");
         return false;
     }
+
+    log_message(
+        "[OpenFrameGen][debug] record_copy: vkBeginCommandBuffer ok.");
 
     VkImageMemoryBarrier prepare_barriers[2]{};
 
@@ -768,6 +784,9 @@ void retire_swapchain_copy_resources(
         },
     };
 
+    log_message(
+        "[OpenFrameGen][debug] record_copy: first vkCmdPipelineBarrier.");
+
     dispatch.cmd_pipeline_barrier(
         slot.command_buffer,
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -779,6 +798,9 @@ void retire_swapchain_copy_resources(
         nullptr,
         2,
         prepare_barriers);
+
+    log_message(
+        "[OpenFrameGen][debug] record_copy: first barrier ok.");
 
     const VkImageCopy copy_region{
         .srcSubresource = VkImageSubresourceLayers{
@@ -802,6 +824,9 @@ void retire_swapchain_copy_resources(
         },
     };
 
+    log_message(
+        "[OpenFrameGen][debug] record_copy: vkCmdCopyImage.");
+
     dispatch.cmd_copy_image(
         slot.command_buffer,
         state.images[image_index],
@@ -810,6 +835,9 @@ void retire_swapchain_copy_resources(
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         1,
         &copy_region);
+
+    log_message(
+        "[OpenFrameGen][debug] record_copy: vkCmdCopyImage ok.");
 
     const VkImageMemoryBarrier restore_source{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -830,6 +858,9 @@ void retire_swapchain_copy_resources(
         },
     };
 
+    log_message(
+        "[OpenFrameGen][debug] record_copy: restore vkCmdPipelineBarrier.");
+
     dispatch.cmd_pipeline_barrier(
         slot.command_buffer,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -842,8 +873,20 @@ void retire_swapchain_copy_resources(
         1,
         &restore_source);
 
-    return dispatch.end_command_buffer(
-               slot.command_buffer) == VK_SUCCESS;
+    log_message(
+        "[OpenFrameGen][debug] record_copy: restore barrier ok.");
+    log_message(
+        "[OpenFrameGen][debug] record_copy: vkEndCommandBuffer.");
+
+    const VkResult end_result =
+        dispatch.end_command_buffer(slot.command_buffer);
+
+    log_message(
+        end_result == VK_SUCCESS
+            ? "[OpenFrameGen][debug] record_copy: vkEndCommandBuffer ok."
+            : "[OpenFrameGen][debug] record_copy: vkEndCommandBuffer failed.");
+
+    return end_result == VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
