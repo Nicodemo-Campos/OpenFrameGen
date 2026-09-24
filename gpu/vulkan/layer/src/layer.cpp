@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -34,6 +35,25 @@ std::unordered_map<void*, DeviceDispatch> g_device_dispatch;
 
 std::atomic<PFN_vkGetInstanceProcAddr> g_next_global_gipa{nullptr};
 std::atomic<std::uint64_t> g_present_count{0};
+
+void log_message(const char* message) noexcept {
+    if (message == nullptr) {
+        return;
+    }
+
+    std::fprintf(stderr, "%s\n", message);
+    std::fflush(stderr);
+
+    const char* log_path = std::getenv("OFG_LOG_FILE");
+    if (log_path == nullptr || *log_path == '\0') {
+        return;
+    }
+
+    if (std::FILE* file = std::fopen(log_path, "a"); file != nullptr) {
+        std::fprintf(file, "%s\n", message);
+        std::fclose(file);
+    }
+}
 
 template <typename Dispatchable>
 [[nodiscard]] void* dispatch_key(Dispatchable object) noexcept {
@@ -195,9 +215,7 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
         g_instance_dispatch[dispatch_key(*instance)] = dispatch;
     }
 
-    std::fprintf(
-        stderr,
-        "[OpenFrameGen] Vulkan layer attached to VkInstance.\n");
+    log_message("[OpenFrameGen] Vulkan layer attached to VkInstance.");
 
     return VK_SUCCESS;
 }
@@ -289,9 +307,7 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateDevice(
         g_device_dispatch[dispatch_key(*device)] = dispatch;
     }
 
-    std::fprintf(
-        stderr,
-        "[OpenFrameGen] Vulkan layer attached to VkDevice.\n");
+    log_message("[OpenFrameGen] Vulkan layer attached to VkDevice.");
 
     return VK_SUCCESS;
 }
@@ -330,9 +346,8 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
         g_present_count.fetch_add(1, std::memory_order_relaxed) + 1;
 
     if (present_number == 1) {
-        std::fprintf(
-            stderr,
-            "[OpenFrameGen] First vkQueuePresentKHR intercepted.\n");
+        log_message(
+            "[OpenFrameGen] First vkQueuePresentKHR intercepted.");
     }
 
     return dispatch.queue_present(queue, present_info);
