@@ -286,11 +286,56 @@ template <typename Dispatchable>
     return UINT32_MAX;
 }
 
+[[nodiscard]] bool wait_for_copy_submissions(
+    const DeviceDispatch& dispatch,
+    SwapchainState& state) noexcept {
+    std::vector<VkFence> pending_fences;
+    pending_fences.reserve(state.copy_slots.size());
+
+    for (const auto& slot : state.copy_slots) {
+        if (slot.has_submission && slot.fence != VK_NULL_HANDLE) {
+            pending_fences.push_back(slot.fence);
+        }
+    }
+
+    if (pending_fences.empty()) {
+        return true;
+    }
+
+    if (dispatch.wait_for_fences == nullptr) {
+        return false;
+    }
+
+    const VkResult result =
+        dispatch.wait_for_fences(
+            dispatch.device,
+            static_cast<std::uint32_t>(pending_fences.size()),
+            pending_fences.data(),
+            VK_TRUE,
+            UINT64_MAX);
+
+    if (result != VK_SUCCESS) {
+        return false;
+    }
+
+    for (auto& slot : state.copy_slots) {
+        if (slot.has_submission) {
+            slot.has_submission = false;
+        }
+    }
+
+    return true;
+}
+
 void destroy_copy_resources(
     const DeviceDispatch& dispatch,
     SwapchainState& state) noexcept {
-    if (state.copy_queue != VK_NULL_HANDLE &&
+    if (!wait_for_copy_submissions(dispatch, state) &&
+        state.copy_queue != VK_NULL_HANDLE &&
         dispatch.queue_wait_idle != nullptr) {
+        log_message(
+            "[OpenFrameGen] Fence-scoped copy teardown failed; "
+            "falling back to vkQueueWaitIdle.");
         dispatch.queue_wait_idle(state.copy_queue);
     }
 
@@ -1458,6 +1503,10 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             log_message(
                                 "[OpenFrameGen] First GPU frame copy "
                                 "completed.");
+                        }
+
+                        if (wait_result == VK_SUCCESS) {
+                            slot.has_submission = false;
                         }
 
                         if (wait_result == VK_SUCCESS &&
