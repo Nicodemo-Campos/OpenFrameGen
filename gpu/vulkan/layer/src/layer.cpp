@@ -82,6 +82,7 @@ struct CopySlot {
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
     VkSemaphore copy_complete = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
+    bool has_submission = false;
 };
 
 struct SwapchainState {
@@ -1346,7 +1347,7 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                 UINT64_MAX);
 
                         if (wait_result == VK_SUCCESS &&
-                            state.first_copy_logged &&
+                            slot.has_submission &&
                             !state.first_copy_completed_logged) {
                             state.first_copy_completed_logged = true;
                             log_message(
@@ -1392,6 +1393,7 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                 slot.fence) == VK_SUCCESS) {
                             copy_complete = slot.copy_complete;
                             copy_submitted = true;
+                            slot.has_submission = true;
 
                             if (!state.first_copy_logged) {
                                 state.first_copy_logged = true;
