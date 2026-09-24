@@ -69,6 +69,8 @@ struct DeviceDispatch {
     PFN_vkQueueSubmit queue_submit = nullptr;
     PFN_vkQueueWaitIdle queue_wait_idle = nullptr;
     PFN_vkQueuePresentKHR queue_present = nullptr;
+
+    PFN_vkSetDeviceLoaderData set_device_loader_data = nullptr;
 };
 
 struct QueueState {
@@ -645,6 +647,17 @@ void retire_swapchain_copy_resources(
             return false;
         }
 
+        if (dispatch.set_device_loader_data == nullptr ||
+            dispatch.set_device_loader_data(
+                dispatch.device,
+                slot.command_buffer) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen] Frame copy initialization failed while "
+                "initializing loader data for a command buffer.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+
         const VkSemaphoreCreateInfo semaphore_info{
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
             .pNext = nullptr,
@@ -1075,6 +1088,15 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateDevice(
     const auto next_gdpa =
         chain_info->u.pLayerInfo->pfnNextGetDeviceProcAddr;
 
+    const auto* loader_data_info =
+        find_device_chain_info(
+            create_info,
+            VK_LOADER_DATA_CALLBACK);
+    const auto set_device_loader_data =
+        loader_data_info != nullptr
+            ? loader_data_info->u.pfnSetDeviceLoaderData
+            : nullptr;
+
     if (next_gipa == nullptr || next_gdpa == nullptr) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }
@@ -1104,6 +1126,7 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateDevice(
     dispatch.device = *device;
     dispatch.physical_device = physical_device;
     dispatch.get_device_proc_addr = next_gdpa;
+    dispatch.set_device_loader_data = set_device_loader_data;
 
     if (instance_dispatch.get_physical_device_memory_properties != nullptr) {
         instance_dispatch.get_physical_device_memory_properties(
