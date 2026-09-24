@@ -18,7 +18,7 @@ This roadmap describes direction, not release promises.
 - [x] Intercept instance/device creation safely
 - [x] Track swapchain creation and destruction
 - [x] Observe `vkQueuePresentKHR`
-- [ ] Copy a presented image into OFG-owned GPU resources
+- [x] Copy a presented image into OFG-owned GPU resources
 - [ ] Preserve synchronization correctness
 - [ ] Add validation-layer test instructions
 

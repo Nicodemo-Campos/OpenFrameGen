@@ -13,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 
@@ -20,16 +21,68 @@ struct InstanceDispatch {
     VkInstance instance = VK_NULL_HANDLE;
     PFN_vkGetInstanceProcAddr get_instance_proc_addr = nullptr;
     PFN_vkDestroyInstance destroy_instance = nullptr;
+    PFN_vkGetPhysicalDeviceMemoryProperties
+        get_physical_device_memory_properties = nullptr;
 };
 
 struct DeviceDispatch {
     VkDevice device = VK_NULL_HANDLE;
+    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+    VkPhysicalDeviceMemoryProperties memory_properties{};
+
     PFN_vkGetDeviceProcAddr get_device_proc_addr = nullptr;
     PFN_vkDestroyDevice destroy_device = nullptr;
+    PFN_vkDeviceWaitIdle device_wait_idle = nullptr;
+
+    PFN_vkGetDeviceQueue get_device_queue = nullptr;
+    PFN_vkGetDeviceQueue2 get_device_queue2 = nullptr;
+
     PFN_vkCreateSwapchainKHR create_swapchain = nullptr;
     PFN_vkDestroySwapchainKHR destroy_swapchain = nullptr;
     PFN_vkGetSwapchainImagesKHR get_swapchain_images = nullptr;
+
+    PFN_vkCreateImage create_image = nullptr;
+    PFN_vkDestroyImage destroy_image = nullptr;
+    PFN_vkGetImageMemoryRequirements get_image_memory_requirements = nullptr;
+    PFN_vkAllocateMemory allocate_memory = nullptr;
+    PFN_vkFreeMemory free_memory = nullptr;
+    PFN_vkBindImageMemory bind_image_memory = nullptr;
+
+    PFN_vkCreateCommandPool create_command_pool = nullptr;
+    PFN_vkDestroyCommandPool destroy_command_pool = nullptr;
+    PFN_vkAllocateCommandBuffers allocate_command_buffers = nullptr;
+    PFN_vkResetCommandBuffer reset_command_buffer = nullptr;
+    PFN_vkBeginCommandBuffer begin_command_buffer = nullptr;
+    PFN_vkEndCommandBuffer end_command_buffer = nullptr;
+    PFN_vkCmdPipelineBarrier cmd_pipeline_barrier = nullptr;
+    PFN_vkCmdCopyImage cmd_copy_image = nullptr;
+
+    PFN_vkCreateSemaphore create_semaphore = nullptr;
+    PFN_vkDestroySemaphore destroy_semaphore = nullptr;
+    PFN_vkCreateFence create_fence = nullptr;
+    PFN_vkDestroyFence destroy_fence = nullptr;
+    PFN_vkWaitForFences wait_for_fences = nullptr;
+    PFN_vkResetFences reset_fences = nullptr;
+
+    PFN_vkQueueSubmit queue_submit = nullptr;
+    PFN_vkQueueWaitIdle queue_wait_idle = nullptr;
     PFN_vkQueuePresentKHR queue_present = nullptr;
+};
+
+struct QueueState {
+    VkDevice device = VK_NULL_HANDLE;
+    std::uint32_t family_index = UINT32_MAX;
+    std::uint32_t queue_index = 0;
+    VkDeviceQueueCreateFlags flags = 0;
+};
+
+struct CopySlot {
+    VkImage destination = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    VkSemaphore copy_complete = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    bool has_submission = false;
 };
 
 struct SwapchainState {
@@ -41,6 +94,18 @@ struct SwapchainState {
     VkImageUsageFlags image_usage = 0;
     std::uint32_t min_image_count = 0;
     std::uint32_t image_count = 0;
+
+    std::vector<VkImage> images;
+    std::vector<CopySlot> copy_slots;
+
+    VkCommandPool command_pool = VK_NULL_HANDLE;
+    VkQueue copy_queue = VK_NULL_HANDLE;
+    std::uint32_t copy_queue_family = UINT32_MAX;
+
+    bool copy_initialized = false;
+    bool copy_skip_logged = false;
+    bool first_copy_logged = false;
+    bool first_copy_completed_logged = false;
     bool first_present_logged = false;
 };
 
@@ -49,6 +114,7 @@ std::mutex g_log_mutex;
 
 std::unordered_map<void*, InstanceDispatch> g_instance_dispatch;
 std::unordered_map<void*, DeviceDispatch> g_device_dispatch;
+std::unordered_map<VkQueue, QueueState> g_queues;
 std::unordered_map<VkSwapchainKHR, SwapchainState> g_swapchains;
 
 std::atomic<PFN_vkGetInstanceProcAddr> g_next_global_gipa{nullptr};
@@ -187,6 +253,483 @@ template <typename Dispatchable>
     return true;
 }
 
+[[nodiscard]] std::uint32_t find_memory_type(
+    const VkPhysicalDeviceMemoryProperties& properties,
+    std::uint32_t type_bits,
+    VkMemoryPropertyFlags preferred_flags) noexcept {
+    for (std::uint32_t index = 0;
+         index < properties.memoryTypeCount;
+         ++index) {
+        const bool compatible = (type_bits & (1u << index)) != 0;
+        const bool preferred =
+            (properties.memoryTypes[index].propertyFlags &
+             preferred_flags) == preferred_flags;
+
+        if (compatible && preferred) {
+            return index;
+        }
+    }
+
+    for (std::uint32_t index = 0;
+         index < properties.memoryTypeCount;
+         ++index) {
+        if ((type_bits & (1u << index)) != 0) {
+            return index;
+        }
+    }
+
+    return UINT32_MAX;
+}
+
+void destroy_copy_resources(
+    const DeviceDispatch& dispatch,
+    SwapchainState& state) noexcept {
+    if (state.copy_queue != VK_NULL_HANDLE &&
+        dispatch.queue_wait_idle != nullptr) {
+        dispatch.queue_wait_idle(state.copy_queue);
+    }
+
+    for (auto& slot : state.copy_slots) {
+        if (slot.copy_complete != VK_NULL_HANDLE &&
+            dispatch.destroy_semaphore != nullptr) {
+            dispatch.destroy_semaphore(
+                dispatch.device,
+                slot.copy_complete,
+                nullptr);
+        }
+
+        if (slot.fence != VK_NULL_HANDLE &&
+            dispatch.destroy_fence != nullptr) {
+            dispatch.destroy_fence(
+                dispatch.device,
+                slot.fence,
+                nullptr);
+        }
+
+        if (slot.destination != VK_NULL_HANDLE &&
+            dispatch.destroy_image != nullptr) {
+            dispatch.destroy_image(
+                dispatch.device,
+                slot.destination,
+                nullptr);
+        }
+
+        if (slot.memory != VK_NULL_HANDLE &&
+            dispatch.free_memory != nullptr) {
+            dispatch.free_memory(
+                dispatch.device,
+                slot.memory,
+                nullptr);
+        }
+    }
+
+    state.copy_slots.clear();
+
+    if (state.command_pool != VK_NULL_HANDLE &&
+        dispatch.destroy_command_pool != nullptr) {
+        dispatch.destroy_command_pool(
+            dispatch.device,
+            state.command_pool,
+            nullptr);
+    }
+
+    state.command_pool = VK_NULL_HANDLE;
+    state.copy_queue = VK_NULL_HANDLE;
+    state.copy_queue_family = UINT32_MAX;
+    state.copy_initialized = false;
+}
+
+[[nodiscard]] bool initialize_copy_resources(
+    const DeviceDispatch& dispatch,
+    VkQueue queue,
+    const QueueState& queue_state,
+    SwapchainState& state) {
+    if (state.copy_initialized) {
+        return true;
+    }
+
+    if ((state.image_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0) {
+        if (!state.copy_skip_logged) {
+            log_message(
+                "[OpenFrameGen] Frame copy skipped: swapchain does not "
+                "support VK_IMAGE_USAGE_TRANSFER_SRC_BIT.");
+            state.copy_skip_logged = true;
+        }
+        return false;
+    }
+
+    if ((queue_state.flags & VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT) != 0) {
+        if (!state.copy_skip_logged) {
+            log_message(
+                "[OpenFrameGen] Frame copy skipped: protected queues are "
+                "not supported by the prototype.");
+            state.copy_skip_logged = true;
+        }
+        return false;
+    }
+
+    if (state.images.empty()) {
+        if (!state.copy_skip_logged) {
+            log_message(
+                "[OpenFrameGen] Frame copy skipped: swapchain image handles "
+                "have not been discovered yet.");
+            state.copy_skip_logged = true;
+        }
+        return false;
+    }
+
+    if (dispatch.create_command_pool == nullptr ||
+        dispatch.allocate_command_buffers == nullptr ||
+        dispatch.create_image == nullptr ||
+        dispatch.get_image_memory_requirements == nullptr ||
+        dispatch.allocate_memory == nullptr ||
+        dispatch.bind_image_memory == nullptr ||
+        dispatch.create_semaphore == nullptr ||
+        dispatch.create_fence == nullptr) {
+        if (!state.copy_skip_logged) {
+            log_message(
+                "[OpenFrameGen] Frame copy skipped: required Vulkan device "
+                "functions are unavailable.");
+            state.copy_skip_logged = true;
+        }
+        return false;
+    }
+
+    state.copy_queue = queue;
+    state.copy_queue_family = queue_state.family_index;
+
+    const VkCommandPoolCreateInfo pool_info{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = queue_state.family_index,
+    };
+
+    if (dispatch.create_command_pool(
+            dispatch.device,
+            &pool_info,
+            nullptr,
+            &state.command_pool) != VK_SUCCESS) {
+        log_message(
+            "[OpenFrameGen] Frame copy initialization failed while creating "
+            "the command pool.");
+        destroy_copy_resources(dispatch, state);
+        return false;
+    }
+
+    state.copy_slots.resize(state.images.size());
+
+    for (std::size_t index = 0;
+         index < state.copy_slots.size();
+         ++index) {
+        auto& slot = state.copy_slots[index];
+
+        const VkImageCreateInfo image_info{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = state.format,
+            .extent = VkExtent3D{
+                state.extent.width,
+                state.extent.height,
+                1,
+            },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+
+        if (dispatch.create_image(
+                dispatch.device,
+                &image_info,
+                nullptr,
+                &slot.destination) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen] Frame copy initialization failed while "
+                "creating an OFG-owned image.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+
+        VkMemoryRequirements requirements{};
+        dispatch.get_image_memory_requirements(
+            dispatch.device,
+            slot.destination,
+            &requirements);
+
+        const std::uint32_t memory_type =
+            find_memory_type(
+                dispatch.memory_properties,
+                requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (memory_type == UINT32_MAX) {
+            log_message(
+                "[OpenFrameGen] Frame copy initialization failed: no "
+                "compatible GPU memory type was found.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+
+        const VkMemoryAllocateInfo allocation_info{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = memory_type,
+        };
+
+        if (dispatch.allocate_memory(
+                dispatch.device,
+                &allocation_info,
+                nullptr,
+                &slot.memory) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen] Frame copy initialization failed while "
+                "allocating GPU memory.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+
+        if (dispatch.bind_image_memory(
+                dispatch.device,
+                slot.destination,
+                slot.memory,
+                0) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen] Frame copy initialization failed while "
+                "binding GPU memory.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+
+        const VkCommandBufferAllocateInfo command_buffer_info{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .commandPool = state.command_pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+
+        if (dispatch.allocate_command_buffers(
+                dispatch.device,
+                &command_buffer_info,
+                &slot.command_buffer) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen] Frame copy initialization failed while "
+                "allocating a command buffer.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+
+        const VkSemaphoreCreateInfo semaphore_info{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+        };
+
+        if (dispatch.create_semaphore(
+                dispatch.device,
+                &semaphore_info,
+                nullptr,
+                &slot.copy_complete) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen] Frame copy initialization failed while "
+                "creating a completion semaphore.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+
+        const VkFenceCreateInfo fence_info{
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+        };
+
+        if (dispatch.create_fence(
+                dispatch.device,
+                &fence_info,
+                nullptr,
+                &slot.fence) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen] Frame copy initialization failed while "
+                "creating a fence.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+    }
+
+    state.copy_initialized = true;
+
+    char message[256]{};
+    std::snprintf(
+        message,
+        sizeof(message),
+        "[OpenFrameGen] Frame copy resources ready: %zu OFG-owned images, "
+        "queue family=%u.",
+        state.copy_slots.size(),
+        state.copy_queue_family);
+    log_message(message);
+
+    return true;
+}
+
+[[nodiscard]] bool record_copy_commands(
+    const DeviceDispatch& dispatch,
+    const SwapchainState& state,
+    std::uint32_t image_index,
+    CopySlot& slot) {
+    if (dispatch.reset_command_buffer == nullptr ||
+        dispatch.begin_command_buffer == nullptr ||
+        dispatch.end_command_buffer == nullptr ||
+        dispatch.cmd_pipeline_barrier == nullptr ||
+        dispatch.cmd_copy_image == nullptr) {
+        return false;
+    }
+
+    if (dispatch.reset_command_buffer(
+            slot.command_buffer,
+            0) != VK_SUCCESS) {
+        return false;
+    }
+
+    const VkCommandBufferBeginInfo begin_info{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = nullptr,
+    };
+
+    if (dispatch.begin_command_buffer(
+            slot.command_buffer,
+            &begin_info) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkImageMemoryBarrier prepare_barriers[2]{};
+
+    prepare_barriers[0] = VkImageMemoryBarrier{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = state.images[image_index],
+        .subresourceRange = VkImageSubresourceRange{
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            0,
+            1,
+            0,
+            1,
+        },
+    };
+
+    prepare_barriers[1] = VkImageMemoryBarrier{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = slot.destination,
+        .subresourceRange = VkImageSubresourceRange{
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            0,
+            1,
+            0,
+            1,
+        },
+    };
+
+    dispatch.cmd_pipeline_barrier(
+        slot.command_buffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        2,
+        prepare_barriers);
+
+    const VkImageCopy copy_region{
+        .srcSubresource = VkImageSubresourceLayers{
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            0,
+            0,
+            1,
+        },
+        .srcOffset = VkOffset3D{0, 0, 0},
+        .dstSubresource = VkImageSubresourceLayers{
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            0,
+            0,
+            1,
+        },
+        .dstOffset = VkOffset3D{0, 0, 0},
+        .extent = VkExtent3D{
+            state.extent.width,
+            state.extent.height,
+            1,
+        },
+    };
+
+    dispatch.cmd_copy_image(
+        slot.command_buffer,
+        state.images[image_index],
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        slot.destination,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &copy_region);
+
+    const VkImageMemoryBarrier restore_source{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .dstAccessMask = 0,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = state.images[image_index],
+        .subresourceRange = VkImageSubresourceRange{
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            0,
+            1,
+            0,
+            1,
+        },
+    };
+
+    dispatch.cmd_pipeline_barrier(
+        slot.command_buffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &restore_source);
+
+    return dispatch.end_command_buffer(
+               slot.command_buffer) == VK_SUCCESS;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
     const VkInstanceCreateInfo* create_info,
     const VkAllocationCallbacks* allocator,
@@ -205,6 +748,17 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateDevice(
 VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
     VkDevice device,
     const VkAllocationCallbacks* allocator);
+
+VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue(
+    VkDevice device,
+    std::uint32_t queue_family_index,
+    std::uint32_t queue_index,
+    VkQueue* queue);
+
+VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue2(
+    VkDevice device,
+    const VkDeviceQueueInfo2* queue_info,
+    VkQueue* queue);
 
 VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
     VkDevice device,
@@ -266,7 +820,6 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
     }
 
     g_next_global_gipa.store(next_gipa, std::memory_order_release);
-
     chain_info->u.pLayerInfo = chain_info->u.pLayerInfo->pNext;
 
     const VkResult result =
@@ -281,6 +834,11 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
         .get_instance_proc_addr = next_gipa,
         .destroy_instance = reinterpret_cast<PFN_vkDestroyInstance>(
             next_gipa(*instance, "vkDestroyInstance")),
+        .get_physical_device_memory_properties =
+            reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
+                next_gipa(
+                    *instance,
+                    "vkGetPhysicalDeviceMemoryProperties")),
     };
 
     {
@@ -366,21 +924,53 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateDevice(
         return result;
     }
 
-    DeviceDispatch dispatch{
-        .device = *device,
-        .get_device_proc_addr = next_gdpa,
-        .destroy_device = reinterpret_cast<PFN_vkDestroyDevice>(
-            next_gdpa(*device, "vkDestroyDevice")),
-        .create_swapchain = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
-            next_gdpa(*device, "vkCreateSwapchainKHR")),
-        .destroy_swapchain = reinterpret_cast<PFN_vkDestroySwapchainKHR>(
-            next_gdpa(*device, "vkDestroySwapchainKHR")),
-        .get_swapchain_images =
-            reinterpret_cast<PFN_vkGetSwapchainImagesKHR>(
-                next_gdpa(*device, "vkGetSwapchainImagesKHR")),
-        .queue_present = reinterpret_cast<PFN_vkQueuePresentKHR>(
-            next_gdpa(*device, "vkQueuePresentKHR")),
-    };
+    DeviceDispatch dispatch{};
+    dispatch.device = *device;
+    dispatch.physical_device = physical_device;
+    dispatch.get_device_proc_addr = next_gdpa;
+
+    if (instance_dispatch.get_physical_device_memory_properties != nullptr) {
+        instance_dispatch.get_physical_device_memory_properties(
+            physical_device,
+            &dispatch.memory_properties);
+    }
+
+#define OFG_LOAD_DEVICE(name, field) \
+    dispatch.field = reinterpret_cast<PFN_##name>( \
+        next_gdpa(*device, #name))
+
+    OFG_LOAD_DEVICE(vkDestroyDevice, destroy_device);
+    OFG_LOAD_DEVICE(vkDeviceWaitIdle, device_wait_idle);
+    OFG_LOAD_DEVICE(vkGetDeviceQueue, get_device_queue);
+    OFG_LOAD_DEVICE(vkGetDeviceQueue2, get_device_queue2);
+    OFG_LOAD_DEVICE(vkCreateSwapchainKHR, create_swapchain);
+    OFG_LOAD_DEVICE(vkDestroySwapchainKHR, destroy_swapchain);
+    OFG_LOAD_DEVICE(vkGetSwapchainImagesKHR, get_swapchain_images);
+    OFG_LOAD_DEVICE(vkCreateImage, create_image);
+    OFG_LOAD_DEVICE(vkDestroyImage, destroy_image);
+    OFG_LOAD_DEVICE(vkGetImageMemoryRequirements, get_image_memory_requirements);
+    OFG_LOAD_DEVICE(vkAllocateMemory, allocate_memory);
+    OFG_LOAD_DEVICE(vkFreeMemory, free_memory);
+    OFG_LOAD_DEVICE(vkBindImageMemory, bind_image_memory);
+    OFG_LOAD_DEVICE(vkCreateCommandPool, create_command_pool);
+    OFG_LOAD_DEVICE(vkDestroyCommandPool, destroy_command_pool);
+    OFG_LOAD_DEVICE(vkAllocateCommandBuffers, allocate_command_buffers);
+    OFG_LOAD_DEVICE(vkResetCommandBuffer, reset_command_buffer);
+    OFG_LOAD_DEVICE(vkBeginCommandBuffer, begin_command_buffer);
+    OFG_LOAD_DEVICE(vkEndCommandBuffer, end_command_buffer);
+    OFG_LOAD_DEVICE(vkCmdPipelineBarrier, cmd_pipeline_barrier);
+    OFG_LOAD_DEVICE(vkCmdCopyImage, cmd_copy_image);
+    OFG_LOAD_DEVICE(vkCreateSemaphore, create_semaphore);
+    OFG_LOAD_DEVICE(vkDestroySemaphore, destroy_semaphore);
+    OFG_LOAD_DEVICE(vkCreateFence, create_fence);
+    OFG_LOAD_DEVICE(vkDestroyFence, destroy_fence);
+    OFG_LOAD_DEVICE(vkWaitForFences, wait_for_fences);
+    OFG_LOAD_DEVICE(vkResetFences, reset_fences);
+    OFG_LOAD_DEVICE(vkQueueSubmit, queue_submit);
+    OFG_LOAD_DEVICE(vkQueueWaitIdle, queue_wait_idle);
+    OFG_LOAD_DEVICE(vkQueuePresentKHR, queue_present);
+
+#undef OFG_LOAD_DEVICE
 
     {
         std::scoped_lock lock{g_state_mutex};
@@ -396,6 +986,7 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
     VkDevice device,
     const VkAllocationCallbacks* allocator) {
     DeviceDispatch dispatch{};
+    std::vector<SwapchainState> swapchains;
 
     {
         std::scoped_lock lock{g_state_mutex};
@@ -406,18 +997,95 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
             g_device_dispatch.erase(it);
         }
 
-        for (auto it_swapchain = g_swapchains.begin();
-             it_swapchain != g_swapchains.end();) {
-            if (it_swapchain->second.device == device) {
-                it_swapchain = g_swapchains.erase(it_swapchain);
+        for (auto queue_it = g_queues.begin();
+             queue_it != g_queues.end();) {
+            if (queue_it->second.device == device) {
+                queue_it = g_queues.erase(queue_it);
             } else {
-                ++it_swapchain;
+                ++queue_it;
+            }
+        }
+
+        for (auto swapchain_it = g_swapchains.begin();
+             swapchain_it != g_swapchains.end();) {
+            if (swapchain_it->second.device == device) {
+                swapchains.push_back(
+                    std::move(swapchain_it->second));
+                swapchain_it = g_swapchains.erase(swapchain_it);
+            } else {
+                ++swapchain_it;
             }
         }
     }
 
+    if (dispatch.device_wait_idle != nullptr) {
+        dispatch.device_wait_idle(device);
+    }
+
+    for (auto& state : swapchains) {
+        destroy_copy_resources(dispatch, state);
+    }
+
     if (dispatch.destroy_device != nullptr) {
         dispatch.destroy_device(device, allocator);
+    }
+}
+
+VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue(
+    VkDevice device,
+    std::uint32_t queue_family_index,
+    std::uint32_t queue_index,
+    VkQueue* queue) {
+    DeviceDispatch dispatch{};
+    if (!find_device_dispatch(dispatch_key(device), dispatch) ||
+        dispatch.get_device_queue == nullptr) {
+        if (queue != nullptr) {
+            *queue = VK_NULL_HANDLE;
+        }
+        return;
+    }
+
+    dispatch.get_device_queue(
+        device,
+        queue_family_index,
+        queue_index,
+        queue);
+
+    if (queue != nullptr && *queue != VK_NULL_HANDLE) {
+        std::scoped_lock lock{g_state_mutex};
+        g_queues[*queue] = QueueState{
+            .device = device,
+            .family_index = queue_family_index,
+            .queue_index = queue_index,
+            .flags = 0,
+        };
+    }
+}
+
+VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue2(
+    VkDevice device,
+    const VkDeviceQueueInfo2* queue_info,
+    VkQueue* queue) {
+    DeviceDispatch dispatch{};
+    if (!find_device_dispatch(dispatch_key(device), dispatch) ||
+        dispatch.get_device_queue2 == nullptr ||
+        queue_info == nullptr) {
+        if (queue != nullptr) {
+            *queue = VK_NULL_HANDLE;
+        }
+        return;
+    }
+
+    dispatch.get_device_queue2(device, queue_info, queue);
+
+    if (queue != nullptr && *queue != VK_NULL_HANDLE) {
+        std::scoped_lock lock{g_state_mutex};
+        g_queues[*queue] = QueueState{
+            .device = device,
+            .family_index = queue_info->queueFamilyIndex,
+            .queue_index = queue_info->queueIndex,
+            .flags = queue_info->flags,
+        };
     }
 }
 
@@ -447,21 +1115,18 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         return result;
     }
 
-    const SwapchainState state{
-        .device = device,
-        .extent = create_info->imageExtent,
-        .format = create_info->imageFormat,
-        .color_space = create_info->imageColorSpace,
-        .present_mode = create_info->presentMode,
-        .image_usage = create_info->imageUsage,
-        .min_image_count = create_info->minImageCount,
-        .image_count = 0,
-        .first_present_logged = false,
-    };
+    SwapchainState state{};
+    state.device = device;
+    state.extent = create_info->imageExtent;
+    state.format = create_info->imageFormat;
+    state.color_space = create_info->imageColorSpace;
+    state.present_mode = create_info->presentMode;
+    state.image_usage = create_info->imageUsage;
+    state.min_image_count = create_info->minImageCount;
 
     {
         std::scoped_lock lock{g_state_mutex};
-        g_swapchains[*swapchain] = state;
+        g_swapchains[*swapchain] = std::move(state);
     }
 
     char message[512]{};
@@ -470,14 +1135,14 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         sizeof(message),
         "[OpenFrameGen] Swapchain created: %ux%u, format=%s(%d), "
         "present=%s(%d), minImages=%u, usage=0x%08x.",
-        state.extent.width,
-        state.extent.height,
-        format_name(state.format),
-        static_cast<int>(state.format),
-        present_mode_name(state.present_mode),
-        static_cast<int>(state.present_mode),
-        state.min_image_count,
-        static_cast<unsigned int>(state.image_usage));
+        create_info->imageExtent.width,
+        create_info->imageExtent.height,
+        format_name(create_info->imageFormat),
+        static_cast<int>(create_info->imageFormat),
+        present_mode_name(create_info->presentMode),
+        static_cast<int>(create_info->presentMode),
+        create_info->minImageCount,
+        static_cast<unsigned int>(create_info->imageUsage));
     log_message(message);
 
     return VK_SUCCESS;
@@ -501,10 +1166,14 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         const auto it = g_swapchains.find(swapchain);
 
         if (it != g_swapchains.end()) {
-            state = it->second;
+            state = std::move(it->second);
             tracked = true;
             g_swapchains.erase(it);
         }
+    }
+
+    if (tracked) {
+        destroy_copy_resources(dispatch, state);
     }
 
     dispatch.destroy_swapchain(device, swapchain, allocator);
@@ -540,22 +1209,31 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgGetSwapchainImagesKHR(
             image_count,
             images);
 
-    if (result != VK_SUCCESS || image_count == nullptr) {
+    if ((result != VK_SUCCESS && result != VK_INCOMPLETE) ||
+        image_count == nullptr) {
         return result;
     }
 
     bool changed = false;
-    SwapchainState state{};
+    std::uint32_t requested_minimum = 0;
 
     {
         std::scoped_lock lock{g_state_mutex};
         const auto it = g_swapchains.find(swapchain);
 
-        if (it != g_swapchains.end() &&
-            it->second.image_count != *image_count) {
-            it->second.image_count = *image_count;
-            state = it->second;
-            changed = true;
+        if (it != g_swapchains.end()) {
+            requested_minimum = it->second.min_image_count;
+
+            if (it->second.image_count != *image_count) {
+                it->second.image_count = *image_count;
+                changed = true;
+            }
+
+            if (images != nullptr) {
+                it->second.images.assign(
+                    images,
+                    images + *image_count);
+            }
         }
     }
 
@@ -566,8 +1244,8 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgGetSwapchainImagesKHR(
             sizeof(message),
             "[OpenFrameGen] Swapchain images discovered: %u "
             "(requested minimum %u).",
-            state.image_count,
-            state.min_image_count);
+            *image_count,
+            requested_minimum);
         log_message(message);
     }
 
@@ -592,28 +1270,29 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
             "[OpenFrameGen] First vkQueuePresentKHR intercepted.");
     }
 
-    if (present_info != nullptr &&
-        present_info->pSwapchains != nullptr) {
-        for (std::uint32_t index = 0;
-             index < present_info->swapchainCount;
-             ++index) {
-            SwapchainState state{};
-            bool should_log = false;
+    if (present_info == nullptr ||
+        present_info->swapchainCount != 1 ||
+        present_info->pSwapchains == nullptr ||
+        present_info->pImageIndices == nullptr) {
+        return dispatch.queue_present(queue, present_info);
+    }
 
-            {
-                std::scoped_lock lock{g_state_mutex};
-                const auto it =
-                    g_swapchains.find(present_info->pSwapchains[index]);
+    VkSemaphore copy_complete = VK_NULL_HANDLE;
+    bool copy_submitted = false;
 
-                if (it != g_swapchains.end() &&
-                    !it->second.first_present_logged) {
-                    it->second.first_present_logged = true;
-                    state = it->second;
-                    should_log = true;
-                }
-            }
+    {
+        std::scoped_lock lock{g_state_mutex};
 
-            if (should_log) {
+        const auto queue_it = g_queues.find(queue);
+        const auto swapchain_it =
+            g_swapchains.find(present_info->pSwapchains[0]);
+
+        if (swapchain_it != g_swapchains.end()) {
+            auto& state = swapchain_it->second;
+
+            if (!state.first_present_logged) {
+                state.first_present_logged = true;
+
                 char message[384]{};
                 std::snprintf(
                     message,
@@ -627,10 +1306,137 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                     state.image_count);
                 log_message(message);
             }
+
+            if (queue_it == g_queues.end()) {
+                if (!state.copy_skip_logged) {
+                    log_message(
+                        "[OpenFrameGen] Frame copy skipped: present queue "
+                        "family is unknown.");
+                    state.copy_skip_logged = true;
+                }
+            } else if (
+                queue_it->second.device != state.device) {
+                if (!state.copy_skip_logged) {
+                    log_message(
+                        "[OpenFrameGen] Frame copy skipped: queue/device "
+                        "association mismatch.");
+                    state.copy_skip_logged = true;
+                }
+            } else if (
+                initialize_copy_resources(
+                    dispatch,
+                    queue,
+                    queue_it->second,
+                    state)) {
+                const std::uint32_t image_index =
+                    present_info->pImageIndices[0];
+
+                if (image_index < state.copy_slots.size() &&
+                    image_index < state.images.size()) {
+                    auto& slot = state.copy_slots[image_index];
+
+                    if (dispatch.wait_for_fences != nullptr &&
+                        dispatch.reset_fences != nullptr &&
+                        dispatch.queue_submit != nullptr) {
+                        const VkResult wait_result =
+                            dispatch.wait_for_fences(
+                                dispatch.device,
+                                1,
+                                &slot.fence,
+                                VK_TRUE,
+                                UINT64_MAX);
+
+                        if (wait_result == VK_SUCCESS &&
+                            slot.has_submission &&
+                            !state.first_copy_completed_logged) {
+                            state.first_copy_completed_logged = true;
+                            log_message(
+                                "[OpenFrameGen] First GPU frame copy "
+                                "completed.");
+                        }
+
+                        if (wait_result == VK_SUCCESS &&
+                            record_copy_commands(
+                                dispatch,
+                                state,
+                                image_index,
+                                slot) &&
+                            dispatch.reset_fences(
+                                dispatch.device,
+                                1,
+                                &slot.fence) == VK_SUCCESS) {
+                        std::vector<VkPipelineStageFlags> wait_stages(
+                            present_info->waitSemaphoreCount,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+                        const VkSubmitInfo submit_info{
+                            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                            .pNext = nullptr,
+                            .waitSemaphoreCount =
+                                present_info->waitSemaphoreCount,
+                            .pWaitSemaphores =
+                                present_info->pWaitSemaphores,
+                            .pWaitDstStageMask =
+                                wait_stages.empty()
+                                    ? nullptr
+                                    : wait_stages.data(),
+                            .commandBufferCount = 1,
+                            .pCommandBuffers = &slot.command_buffer,
+                            .signalSemaphoreCount = 1,
+                            .pSignalSemaphores = &slot.copy_complete,
+                        };
+
+                        if (dispatch.queue_submit(
+                                queue,
+                                1,
+                                &submit_info,
+                                slot.fence) == VK_SUCCESS) {
+                            copy_complete = slot.copy_complete;
+                            copy_submitted = true;
+                            slot.has_submission = true;
+
+                            if (!state.first_copy_logged) {
+                                state.first_copy_logged = true;
+
+                                char message[320]{};
+                                std::snprintf(
+                                    message,
+                                    sizeof(message),
+                                    "[OpenFrameGen] First GPU frame copy "
+                                    "submitted: image=%u, %ux%u, "
+                                    "format=%s.",
+                                    image_index,
+                                    state.extent.width,
+                                    state.extent.height,
+                                    format_name(state.format));
+                                log_message(message);
+                            }
+                            } else {
+                                log_message(
+                                    "[OpenFrameGen] Frame copy submit "
+                                    "failed; disabling copy resources for "
+                                    "this swapchain.");
+                                destroy_copy_resources(dispatch, state);
+                                state.copy_skip_logged = true;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    return dispatch.queue_present(queue, present_info);
+    if (!copy_submitted) {
+        return dispatch.queue_present(queue, present_info);
+    }
+
+    VkPresentInfoKHR modified_present = *present_info;
+    modified_present.waitSemaphoreCount = 1;
+    modified_present.pWaitSemaphores = &copy_complete;
+
+    return dispatch.queue_present(
+        queue,
+        &modified_present);
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL ofgGetInstanceProcAddr(
@@ -663,6 +1469,16 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL ofgGetInstanceProcAddr(
     if (std::strcmp(name, "vkCreateDevice") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(
             ofgCreateDevice);
+    }
+
+    if (std::strcmp(name, "vkGetDeviceQueue") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(
+            ofgGetDeviceQueue);
+    }
+
+    if (std::strcmp(name, "vkGetDeviceQueue2") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(
+            ofgGetDeviceQueue2);
     }
 
     if (std::strcmp(name, "vkCreateSwapchainKHR") == 0) {
@@ -716,6 +1532,16 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL ofgGetDeviceProcAddr(
     if (std::strcmp(name, "vkDestroyDevice") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(
             ofgDestroyDevice);
+    }
+
+    if (std::strcmp(name, "vkGetDeviceQueue") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(
+            ofgGetDeviceQueue);
+    }
+
+    if (std::strcmp(name, "vkGetDeviceQueue2") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(
+            ofgGetDeviceQueue2);
     }
 
     if (std::strcmp(name, "vkCreateSwapchainKHR") == 0) {
