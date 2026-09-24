@@ -104,6 +104,7 @@ struct SwapchainState {
     bool copy_initialized = false;
     bool copy_skip_logged = false;
     bool first_copy_logged = false;
+    bool first_copy_completed_logged = false;
     bool first_present_logged = false;
 };
 
@@ -1335,22 +1336,34 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
 
                     if (dispatch.wait_for_fences != nullptr &&
                         dispatch.reset_fences != nullptr &&
-                        dispatch.queue_submit != nullptr &&
-                        dispatch.wait_for_fences(
-                            dispatch.device,
-                            1,
-                            &slot.fence,
-                            VK_TRUE,
-                            UINT64_MAX) == VK_SUCCESS &&
-                        record_copy_commands(
-                            dispatch,
-                            state,
-                            image_index,
-                            slot) &&
-                        dispatch.reset_fences(
-                            dispatch.device,
-                            1,
-                            &slot.fence) == VK_SUCCESS) {
+                        dispatch.queue_submit != nullptr) {
+                        const VkResult wait_result =
+                            dispatch.wait_for_fences(
+                                dispatch.device,
+                                1,
+                                &slot.fence,
+                                VK_TRUE,
+                                UINT64_MAX);
+
+                        if (wait_result == VK_SUCCESS &&
+                            state.first_copy_logged &&
+                            !state.first_copy_completed_logged) {
+                            state.first_copy_completed_logged = true;
+                            log_message(
+                                "[OpenFrameGen] First GPU frame copy "
+                                "completed.");
+                        }
+
+                        if (wait_result == VK_SUCCESS &&
+                            record_copy_commands(
+                                dispatch,
+                                state,
+                                image_index,
+                                slot) &&
+                            dispatch.reset_fences(
+                                dispatch.device,
+                                1,
+                                &slot.fence) == VK_SUCCESS) {
                         std::vector<VkPipelineStageFlags> wait_stages(
                             present_info->waitSemaphoreCount,
                             VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -1396,13 +1409,14 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                     format_name(state.format));
                                 log_message(message);
                             }
-                        } else {
-                            log_message(
-                                "[OpenFrameGen] Frame copy submit failed; "
-                                "disabling copy resources for this "
-                                "swapchain.");
-                            destroy_copy_resources(dispatch, state);
-                            state.copy_skip_logged = true;
+                            } else {
+                                log_message(
+                                    "[OpenFrameGen] Frame copy submit "
+                                    "failed; disabling copy resources for "
+                                    "this swapchain.");
+                                destroy_copy_resources(dispatch, state);
+                                state.copy_skip_logged = true;
+                            }
                         }
                     }
                 }
