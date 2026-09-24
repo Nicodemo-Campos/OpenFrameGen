@@ -16,7 +16,7 @@ This roadmap describes direction, not release promises.
 
 - [x] Load as a Vulkan layer
 - [x] Intercept instance/device creation safely
-- [ ] Track swapchain creation and destruction
+- [x] Track swapchain creation and destruction
 - [x] Observe `vkQueuePresentKHR`
 - [ ] Copy a presented image into OFG-owned GPU resources
 - [ ] Preserve synchronization correctness
