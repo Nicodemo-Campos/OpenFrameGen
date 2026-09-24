@@ -9,15 +9,15 @@ This roadmap describes direction, not release promises.
 - [x] Minimal OFG core
 - [x] Minimal CLI frontend
 - [x] Portable smoke test
-- [ ] CI verified on Linux and Windows
+- [x] CI verified on Linux and Windows
 - [ ] Define logging and error model
 
 ## Phase 1 — Vulkan presentation layer
 
-- [ ] Load as a Vulkan layer
-- [ ] Intercept instance/device creation safely
+- [x] Load as a Vulkan layer
+- [x] Intercept instance/device creation safely
 - [ ] Track swapchain creation and destruction
-- [ ] Observe `vkQueuePresentKHR`
+- [x] Observe `vkQueuePresentKHR`
 - [ ] Copy a presented image into OFG-owned GPU resources
 - [ ] Preserve synchronization correctness
 - [ ] Add validation-layer test instructions
