@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
