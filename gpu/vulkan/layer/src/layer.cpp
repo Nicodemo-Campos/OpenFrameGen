@@ -1109,8 +1109,7 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
     DeviceDispatch dispatch{};
     std::vector<SwapchainState> swapchains;
     std::vector<VkSemaphore> retired_present_semaphores;
-    const void* const_device_key = dispatch_key(device);
-    void* device_key = const_cast<void*>(const_device_key);
+    void* device_key = dispatch_key(device);
 
     {
         std::scoped_lock lock{g_state_mutex};
