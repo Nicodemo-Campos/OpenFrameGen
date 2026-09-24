@@ -378,6 +378,7 @@ bool VulkanPassthroughPipeline::initialize(
          index < source_images.size();
          ++index) {
         auto& slot = slots_[index];
+        slot.source = source_images[index];
         slot.descriptor_set = descriptor_sets[index];
 
         const VkImageViewCreateInfo source_view_info{
@@ -623,15 +624,47 @@ bool VulkanPassthroughPipeline::record(
         },
     };
 
-    barriers[0].image =
-        slots_[slot_index].source_view != VK_NULL_HANDLE
-            ? VK_NULL_HANDLE
-            : VK_NULL_HANDLE;
+    barriers[0].image = slot.source;
 
-    // The source image is not stored separately from its view in Slot.
-    // VkImageView cannot be used in a barrier, so record() relies on the
-    // source VkImage being supplied through the descriptor setup path.
-    return false;
+    cmd_pipeline_barrier_(
+        command_buffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        static_cast<std::uint32_t>(barriers.size()),
+        barriers.data());
+
+    cmd_bind_pipeline_(
+        command_buffer,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        pipeline_);
+
+    cmd_bind_descriptor_sets_(
+        command_buffer,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        pipeline_layout_,
+        0,
+        1,
+        &slot.descriptor_set,
+        0,
+        nullptr);
+
+    const std::uint32_t group_count_x =
+        (extent_.width + 7u) / 8u;
+    const std::uint32_t group_count_y =
+        (extent_.height + 7u) / 8u;
+
+    cmd_dispatch_(
+        command_buffer,
+        group_count_x,
+        group_count_y,
+        1);
+
+    return true;
 }
 
 void VulkanPassthroughPipeline::destroy() noexcept {
