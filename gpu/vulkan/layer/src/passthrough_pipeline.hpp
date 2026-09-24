@@ -41,6 +41,7 @@ public:
 
 private:
     struct Slot {
+        VkImage source = VK_NULL_HANDLE;
         VkImageView source_view = VK_NULL_HANDLE;
         VkImage output = VK_NULL_HANDLE;
         VkDeviceMemory output_memory = VK_NULL_HANDLE;
