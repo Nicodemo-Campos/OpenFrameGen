@@ -9,6 +9,7 @@ project(
 
 option(OFG_BUILD_CLI "Build the OpenFrameGen command-line interface" ON)
 option(OFG_BUILD_TESTS "Build OpenFrameGen tests" ON)
+option(OFG_BUILD_VULKAN_LAYER "Build the OpenFrameGen Vulkan layer when headers are available" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +23,24 @@ add_subdirectory(core)
 
 if(OFG_BUILD_CLI)
     add_subdirectory(frontends/cli)
+endif()
+
+if(OFG_BUILD_VULKAN_LAYER)
+    find_path(
+        OFG_VULKAN_INCLUDE_DIR
+        NAMES vulkan/vk_layer.h
+        HINTS
+            "$ENV{VULKAN_SDK}/Include"
+            "$ENV{VULKAN_SDK}/include"
+            ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES}
+    )
+
+    if(OFG_VULKAN_INCLUDE_DIR)
+        message(STATUS "OpenFrameGen Vulkan headers: ${OFG_VULKAN_INCLUDE_DIR}")
+        add_subdirectory(gpu/vulkan/layer)
+    else()
+        message(STATUS "Vulkan layer skipped: vulkan/vk_layer.h was not found")
+    endif()
 endif()
 
 if(OFG_BUILD_TESTS)
