@@ -1564,6 +1564,12 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                     if (dispatch.wait_for_fences != nullptr &&
                         dispatch.reset_fences != nullptr &&
                         dispatch.queue_submit != nullptr) {
+                        if (present_number == 1) {
+                            log_message(
+                                "[OpenFrameGen][debug] Waiting for first "
+                                "copy-slot fence.");
+                        }
+
                         const VkResult wait_result =
                             dispatch.wait_for_fences(
                                 dispatch.device,
@@ -1571,6 +1577,13 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                 &slot.fence,
                                 VK_TRUE,
                                 UINT64_MAX);
+
+                        if (present_number == 1) {
+                            log_message(
+                                wait_result == VK_SUCCESS
+                                    ? "[OpenFrameGen][debug] First fence wait succeeded."
+                                    : "[OpenFrameGen][debug] First fence wait failed.");
+                        }
 
                         if (wait_result == VK_SUCCESS &&
                             slot.has_submission &&
@@ -1585,16 +1598,55 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             slot.has_submission = false;
                         }
 
+                        bool commands_recorded = false;
+                        if (wait_result == VK_SUCCESS) {
+                            if (present_number == 1) {
+                                log_message(
+                                    "[OpenFrameGen][debug] Recording first "
+                                    "copy command buffer.");
+                            }
+
+                            commands_recorded =
+                                record_copy_commands(
+                                    dispatch,
+                                    state,
+                                    image_index,
+                                    slot);
+
+                            if (present_number == 1) {
+                                log_message(
+                                    commands_recorded
+                                        ? "[OpenFrameGen][debug] First copy command buffer recorded."
+                                        : "[OpenFrameGen][debug] First copy command recording failed.");
+                            }
+                        }
+
+                        VkResult reset_result = VK_ERROR_UNKNOWN;
                         if (wait_result == VK_SUCCESS &&
-                            record_copy_commands(
-                                dispatch,
-                                state,
-                                image_index,
-                                slot) &&
-                            dispatch.reset_fences(
-                                dispatch.device,
-                                1,
-                                &slot.fence) == VK_SUCCESS) {
+                            commands_recorded) {
+                            if (present_number == 1) {
+                                log_message(
+                                    "[OpenFrameGen][debug] Resetting first "
+                                    "copy-slot fence.");
+                            }
+
+                            reset_result =
+                                dispatch.reset_fences(
+                                    dispatch.device,
+                                    1,
+                                    &slot.fence);
+
+                            if (present_number == 1) {
+                                log_message(
+                                    reset_result == VK_SUCCESS
+                                        ? "[OpenFrameGen][debug] First fence reset succeeded."
+                                        : "[OpenFrameGen][debug] First fence reset failed.");
+                            }
+                        }
+
+                        if (wait_result == VK_SUCCESS &&
+                            commands_recorded &&
+                            reset_result == VK_SUCCESS) {
                         std::vector<VkPipelineStageFlags> wait_stages(
                             present_info->waitSemaphoreCount,
                             VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -1616,11 +1668,27 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             .pSignalSemaphores = &slot.copy_complete,
                         };
 
-                        if (dispatch.queue_submit(
+                        if (present_number == 1) {
+                            log_message(
+                                "[OpenFrameGen][debug] Submitting first GPU "
+                                "frame copy.");
+                        }
+
+                        const VkResult submit_result =
+                            dispatch.queue_submit(
                                 queue,
                                 1,
                                 &submit_info,
-                                slot.fence) == VK_SUCCESS) {
+                                slot.fence);
+
+                        if (present_number == 1) {
+                            log_message(
+                                submit_result == VK_SUCCESS
+                                    ? "[OpenFrameGen][debug] First queue submit returned VK_SUCCESS."
+                                    : "[OpenFrameGen][debug] First queue submit returned an error.");
+                        }
+
+                        if (submit_result == VK_SUCCESS) {
                             copy_complete = slot.copy_complete;
                             copy_submitted = true;
                             slot.has_submission = true;
