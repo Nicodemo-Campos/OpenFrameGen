@@ -37,6 +37,9 @@ Frame pipeline   Profiles         Module API
 ```text
 OpenFrameGen/
 ├── core/               Core APIs and platform-independent state
+├── gpu/
+│   ├── compute/        Backend-neutral compute contract
+│   └── vulkan/         Vulkan integration and presentation layer
 ├── frontends/
 │   └── cli/            Command-line frontend
 ├── docs/               Design and development documentation
@@ -45,7 +48,9 @@ OpenFrameGen/
 └── CMakeLists.txt
 ```
 
-Directories for Vulkan, capture, algorithms, shaders and additional frontends will be added when their first implementation lands rather than being committed empty.
+The compute abstraction defines backend identity, image descriptions, format support and capabilities without exposing Vulkan, Direct3D or Metal types. Concrete GPU backends can implement that contract while frame-processing algorithms remain backend-neutral.
+
+Directories for capture, algorithms, shaders and additional frontends will be added when their first implementation lands rather than being committed empty.
 
 ## Near-term backend plan
 

@@ -11,3 +11,17 @@ add_test(
     NAME ofg_core_runtime
     COMMAND ofg_core_tests
 )
+
+add_executable(ofg_compute_tests
+    compute_backend_tests.cpp
+)
+
+target_link_libraries(ofg_compute_tests
+    PRIVATE
+        OpenFrameGen::Compute
+)
+
+add_test(
+    NAME ofg_compute_backend
+    COMMAND ofg_compute_tests
+)

@@ -24,7 +24,7 @@ This roadmap describes direction, not release promises.
 
 ## Phase 2 — First image-processing pipeline
 
-- [ ] Compute backend abstraction
+- [x] Compute backend abstraction
 - [ ] Pass-through compute pipeline
 - [ ] Bilinear/bicubic scaler
 - [ ] Sharpening pass
