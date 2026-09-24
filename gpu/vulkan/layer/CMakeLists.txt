@@ -48,8 +48,8 @@ if(OFG_GLSLC_EXECUTABLE)
         OUTPUT "${OFG_PASSTHROUGH_HEADER}"
         COMMAND
             "${CMAKE_COMMAND}"
-            -DINPUT="${OFG_PASSTHROUGH_SPV}"
-            -DOUTPUT="${OFG_PASSTHROUGH_HEADER}"
+            "-DINPUT=${OFG_PASSTHROUGH_SPV}"
+            "-DOUTPUT=${OFG_PASSTHROUGH_HEADER}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
         DEPENDS
             "${OFG_PASSTHROUGH_SPV}"
