@@ -47,16 +47,17 @@ template <typename Dispatchable>
 [[nodiscard]] VkLayerInstanceCreateInfo* find_instance_chain_info(
     const VkInstanceCreateInfo* create_info,
     VkLayerFunction function) noexcept {
-    auto* current = reinterpret_cast<VkLayerInstanceCreateInfo*>(
-        const_cast<void*>(create_info->pNext));
+    auto* current = reinterpret_cast<const VkLayerInstanceCreateInfo*>(
+        create_info->pNext);
 
     while (current != nullptr) {
         if (current->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO &&
             current->function == function) {
-            return current;
+            return const_cast<VkLayerInstanceCreateInfo*>(current);
         }
 
-        current = reinterpret_cast<VkLayerInstanceCreateInfo*>(current->pNext);
+        current = reinterpret_cast<const VkLayerInstanceCreateInfo*>(
+            current->pNext);
     }
 
     return nullptr;
@@ -65,16 +66,17 @@ template <typename Dispatchable>
 [[nodiscard]] VkLayerDeviceCreateInfo* find_device_chain_info(
     const VkDeviceCreateInfo* create_info,
     VkLayerFunction function) noexcept {
-    auto* current = reinterpret_cast<VkLayerDeviceCreateInfo*>(
-        const_cast<void*>(create_info->pNext));
+    auto* current = reinterpret_cast<const VkLayerDeviceCreateInfo*>(
+        create_info->pNext);
 
     while (current != nullptr) {
         if (current->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO &&
             current->function == function) {
-            return current;
+            return const_cast<VkLayerDeviceCreateInfo*>(current);
         }
 
-        current = reinterpret_cast<VkLayerDeviceCreateInfo*>(current->pNext);
+        current = reinterpret_cast<const VkLayerDeviceCreateInfo*>(
+            current->pNext);
     }
 
     return nullptr;
