@@ -1960,6 +1960,13 @@ void VulkanPassthroughPipeline::destroy() noexcept {
 
     if (device_ != VK_NULL_HANDLE &&
         destroy_pipeline_ != nullptr &&
+        motion_pipeline_ != VK_NULL_HANDLE) {
+        destroy_pipeline_(device_, motion_pipeline_, nullptr);
+    }
+    motion_pipeline_ = VK_NULL_HANDLE;
+
+    if (device_ != VK_NULL_HANDLE &&
+        destroy_pipeline_ != nullptr &&
         sharpen_pipeline_ != VK_NULL_HANDLE) {
         destroy_pipeline_(device_, sharpen_pipeline_, nullptr);
     }
@@ -1974,6 +1981,16 @@ void VulkanPassthroughPipeline::destroy() noexcept {
 
     if (device_ != VK_NULL_HANDLE &&
         destroy_pipeline_layout_ != nullptr &&
+        motion_pipeline_layout_ != VK_NULL_HANDLE) {
+        destroy_pipeline_layout_(
+            device_,
+            motion_pipeline_layout_,
+            nullptr);
+    }
+    motion_pipeline_layout_ = VK_NULL_HANDLE;
+
+    if (device_ != VK_NULL_HANDLE &&
+        destroy_pipeline_layout_ != nullptr &&
         pipeline_layout_ != VK_NULL_HANDLE) {
         destroy_pipeline_layout_(
             device_,
@@ -1981,6 +1998,16 @@ void VulkanPassthroughPipeline::destroy() noexcept {
             nullptr);
     }
     pipeline_layout_ = VK_NULL_HANDLE;
+
+    if (device_ != VK_NULL_HANDLE &&
+        destroy_descriptor_set_layout_ != nullptr &&
+        motion_descriptor_set_layout_ != VK_NULL_HANDLE) {
+        destroy_descriptor_set_layout_(
+            device_,
+            motion_descriptor_set_layout_,
+            nullptr);
+    }
+    motion_descriptor_set_layout_ = VK_NULL_HANDLE;
 
     if (device_ != VK_NULL_HANDLE &&
         destroy_descriptor_set_layout_ != nullptr &&
@@ -1998,6 +2025,37 @@ void VulkanPassthroughPipeline::destroy() noexcept {
         destroy_sampler_(device_, sampler_, nullptr);
     }
     sampler_ = VK_NULL_HANDLE;
+
+    for (auto& motion_field : motion_fields_) {
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_image_view_ != nullptr &&
+            motion_field.view != VK_NULL_HANDLE) {
+            destroy_image_view_(
+                device_,
+                motion_field.view,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_image_ != nullptr &&
+            motion_field.image != VK_NULL_HANDLE) {
+            destroy_image_(
+                device_,
+                motion_field.image,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            free_memory_ != nullptr &&
+            motion_field.memory != VK_NULL_HANDLE) {
+            free_memory_(
+                device_,
+                motion_field.memory,
+                nullptr);
+        }
+    }
+    motion_fields_ = {};
+    motion_extent_ = {};
 
     for (auto& history_image : history_) {
         if (device_ != VK_NULL_HANDLE &&
