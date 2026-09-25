@@ -1950,6 +1950,259 @@ void retire_swapchain_copy_resources(
                slot.command_buffer) == VK_SUCCESS;
 }
 
+[[nodiscard]] bool try_present_2x_double_buffered(
+    const DeviceDispatch& dispatch,
+    VkQueue queue,
+    const VkPresentInfoKHR* original_present,
+    SwapchainState& state,
+    std::uint32_t source_index,
+    VkSemaphore copy_complete,
+    std::uint64_t acquire_wait_ns,
+    VkResult& present_result) {
+    if (original_present == nullptr ||
+        original_present->pSwapchains == nullptr ||
+        source_index >= state.copy_slots.size() ||
+        state.images.size() != 2 ||
+        state.synthetic_acquire == VK_NULL_HANDLE ||
+        state.synthetic_fence == VK_NULL_HANDLE ||
+        state.synthetic_command_buffer == VK_NULL_HANDLE ||
+        dispatch.acquire_next_image == nullptr ||
+        dispatch.queue_submit == nullptr ||
+        dispatch.queue_present == nullptr ||
+        dispatch.wait_for_fences == nullptr ||
+        dispatch.reset_fences == nullptr) {
+        return false;
+    }
+
+    ++state.generated_present_attempt_count;
+
+    if (state.synthetic_submission_pending) {
+        const VkResult wait_result =
+            dispatch.wait_for_fences(
+                dispatch.device,
+                1,
+                &state.synthetic_fence,
+                VK_TRUE,
+                UINT64_MAX);
+
+        if (wait_result != VK_SUCCESS) {
+            ++state.generated_source_drop_count;
+            return false;
+        }
+
+        state.synthetic_submission_pending = false;
+    }
+
+    const VkSwapchainKHR swapchain =
+        original_present->pSwapchains[0];
+    auto& source_slot =
+        state.copy_slots[source_index];
+
+    VkResult generated_result = VK_SUCCESS;
+    const VkPresentInfoKHR generated_present{
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = nullptr,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &copy_complete,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &source_index,
+        .pResults = &generated_result,
+    };
+
+    const VkResult generated_queue_result =
+        dispatch.queue_present(
+            queue,
+            &generated_present);
+
+    source_slot.used_for_present = true;
+    ++state.generated_present_count;
+
+    if (generated_queue_result != VK_SUCCESS &&
+        generated_queue_result != VK_SUBOPTIMAL_KHR) {
+        ++state.generated_source_drop_count;
+        present_result = generated_queue_result;
+        return true;
+    }
+
+    std::uint32_t replay_index = UINT32_MAX;
+
+    VkResult acquire_result =
+        dispatch.acquire_next_image(
+            dispatch.device,
+            swapchain,
+            0,
+            state.synthetic_acquire,
+            VK_NULL_HANDLE,
+            &replay_index);
+
+    if (acquire_result == VK_NOT_READY ||
+        acquire_result == VK_TIMEOUT) {
+        ++state.generated_acquire_miss_count;
+
+        const std::uint64_t doubled_wait =
+            acquire_wait_ns >
+                    (UINT64_MAX / 2u)
+                ? UINT64_MAX
+                : acquire_wait_ns * 2u;
+        constexpr std::uint64_t min_wait_ns = 1'000'000u;
+        constexpr std::uint64_t max_wait_ns = 50'000'000u;
+        const std::uint64_t bounded_wait_ns =
+            std::clamp(
+                doubled_wait,
+                min_wait_ns,
+                max_wait_ns);
+
+        ++state.generated_bounded_acquire_count;
+
+        acquire_result =
+            dispatch.acquire_next_image(
+                dispatch.device,
+                swapchain,
+                bounded_wait_ns,
+                state.synthetic_acquire,
+                VK_NULL_HANDLE,
+                &replay_index);
+
+        if ((acquire_result == VK_SUCCESS ||
+             acquire_result == VK_SUBOPTIMAL_KHR) &&
+            !state.first_bounded_acquire_logged) {
+            state.first_bounded_acquire_logged = true;
+
+            char acquire_message[320]{};
+            std::snprintf(
+                acquire_message,
+                sizeof(acquire_message),
+                "[OpenFrameGen] First double-buffered 2x replay acquire "
+                "succeeded: wait-budget=%.3f ms, image=%u.",
+                static_cast<double>(bounded_wait_ns) /
+                    1'000'000.0,
+                replay_index);
+            log_message(acquire_message);
+        }
+    }
+
+    if (acquire_result == VK_NOT_READY ||
+        acquire_result == VK_TIMEOUT) {
+        ++state.generated_acquire_timeout_count;
+        ++state.generated_source_drop_count;
+        present_result = generated_queue_result;
+        return true;
+    }
+
+    if (acquire_result != VK_SUCCESS &&
+        acquire_result != VK_SUBOPTIMAL_KHR) {
+        ++state.generated_acquire_error_count;
+        ++state.generated_source_drop_count;
+        present_result = generated_queue_result;
+        return true;
+    }
+
+    if (replay_index >= state.copy_slots.size() ||
+        replay_index >= state.images.size()) {
+        ++state.generated_record_failure_count;
+        ++state.generated_source_drop_count;
+        present_result = generated_queue_result;
+        return true;
+    }
+
+    const VkResult source_fence_result =
+        dispatch.wait_for_fences(
+            dispatch.device,
+            1,
+            &source_slot.fence,
+            VK_TRUE,
+            UINT64_MAX);
+
+    if (source_fence_result != VK_SUCCESS) {
+        ++state.generated_record_failure_count;
+        ++state.generated_source_drop_count;
+        present_result = generated_queue_result;
+        return true;
+    }
+
+    source_slot.has_submission = false;
+
+    auto& replay_slot =
+        state.copy_slots[replay_index];
+
+    if (replay_slot.source_present_ready == VK_NULL_HANDLE ||
+        !record_source_replay_commands(
+            dispatch,
+            state,
+            source_slot,
+            replay_index) ||
+        dispatch.reset_fences(
+            dispatch.device,
+            1,
+            &state.synthetic_fence) != VK_SUCCESS) {
+        ++state.generated_record_failure_count;
+        ++state.generated_source_drop_count;
+        present_result = generated_queue_result;
+        return true;
+    }
+
+    const VkPipelineStageFlags replay_wait_stage =
+        VK_PIPELINE_STAGE_TRANSFER_BIT;
+    const VkSemaphore replay_ready =
+        replay_slot.source_present_ready;
+
+    const VkSubmitInfo replay_submit{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = nullptr,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &state.synthetic_acquire,
+        .pWaitDstStageMask = &replay_wait_stage,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &state.synthetic_command_buffer,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &replay_ready,
+    };
+
+    if (dispatch.queue_submit(
+            queue,
+            1,
+            &replay_submit,
+            state.synthetic_fence) != VK_SUCCESS) {
+        ++state.generated_submit_failure_count;
+        ++state.generated_source_drop_count;
+        present_result = generated_queue_result;
+        return true;
+    }
+
+    state.synthetic_submission_pending = true;
+    replay_slot.source_used_for_present = true;
+
+    VkPresentInfoKHR replay_present =
+        *original_present;
+    replay_present.waitSemaphoreCount = 1;
+    replay_present.pWaitSemaphores = &replay_ready;
+    replay_present.pImageIndices = &replay_index;
+
+    present_result =
+        dispatch.queue_present(
+            queue,
+            &replay_present);
+
+    ++state.generated_source_replay_count;
+
+    if (!state.first_2x_present_logged) {
+        state.first_2x_present_logged = true;
+
+        char message[360]{};
+        std::snprintf(
+            message,
+            sizeof(message),
+            "[OpenFrameGen] First real double-buffered 2x pair queued: "
+            "generated image=%u, replayed source image=%u.",
+            source_index,
+            replay_index);
+        log_message(message);
+    }
+
+    return true;
+}
+
 [[nodiscard]] bool try_present_2x_pair(
     const DeviceDispatch& dispatch,
     VkQueue queue,
