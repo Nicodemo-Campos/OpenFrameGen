@@ -55,6 +55,7 @@ struct DeviceDispatch {
     PFN_vkCreateSwapchainKHR create_swapchain = nullptr;
     PFN_vkDestroySwapchainKHR destroy_swapchain = nullptr;
     PFN_vkGetSwapchainImagesKHR get_swapchain_images = nullptr;
+    PFN_vkAcquireNextImageKHR acquire_next_image = nullptr;
 
     PFN_vkCreateImage create_image = nullptr;
     PFN_vkDestroyImage destroy_image = nullptr;
@@ -71,6 +72,7 @@ struct DeviceDispatch {
     PFN_vkEndCommandBuffer end_command_buffer = nullptr;
     PFN_vkCmdPipelineBarrier cmd_pipeline_barrier = nullptr;
     PFN_vkCmdCopyImage cmd_copy_image = nullptr;
+    PFN_vkCmdBlitImage cmd_blit_image = nullptr;
 
     PFN_vkCreateSemaphore create_semaphore = nullptr;
     PFN_vkDestroySemaphore destroy_semaphore = nullptr;
@@ -100,9 +102,13 @@ struct CopySlot {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
     VkSemaphore copy_complete = VK_NULL_HANDLE;
+    VkSemaphore generated_present_ready = VK_NULL_HANDLE;
+    VkSemaphore source_present_ready = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     bool has_submission = false;
     bool used_for_present = false;
+    bool generated_used_for_present = false;
+    bool source_used_for_present = false;
 };
 
 struct SwapchainState {
@@ -123,9 +129,15 @@ struct SwapchainState {
     std::unique_ptr<ofg::vulkan::VulkanPassthroughPipeline> passthrough;
 
     VkCommandPool command_pool = VK_NULL_HANDLE;
+    VkCommandBuffer synthetic_command_buffer = VK_NULL_HANDLE;
+    VkSemaphore synthetic_acquire = VK_NULL_HANDLE;
+    VkFence synthetic_fence = VK_NULL_HANDLE;
     VkQueue copy_queue = VK_NULL_HANDLE;
     std::uint32_t copy_queue_family = UINT32_MAX;
+    bool synthetic_submission_pending = false;
 
+    bool interpolate_2x_requested = false;
+    bool transfer_dst_enabled = false;
     bool copy_initialized = false;
     bool copy_skip_logged = false;
     bool first_copy_logged = false;
@@ -138,6 +150,7 @@ struct SwapchainState {
     bool first_motion_validation_logged = false;
     bool first_warp_validation_logged = false;
     bool first_cadence_logged = false;
+    bool first_2x_present_logged = false;
     bool first_timing_logged = false;
     bool first_present_logged = false;
 
