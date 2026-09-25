@@ -2492,6 +2492,13 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
     std::uint64_t source_present_count = 0;
     std::uint64_t generated_present_count = 0;
     std::uint64_t generated_present_attempt_count = 0;
+    std::uint64_t generated_acquire_miss_count = 0;
+    std::uint64_t generated_bounded_acquire_count = 0;
+    std::uint64_t generated_acquire_timeout_count = 0;
+    std::uint64_t generated_acquire_error_count = 0;
+    std::uint64_t generated_same_image_count = 0;
+    std::uint64_t generated_record_failure_count = 0;
+    std::uint64_t generated_submit_failure_count = 0;
 
     if (state != nullptr) {
         std::scoped_lock state_lock{state->mutex};
@@ -2562,6 +2569,20 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         generated_present_count = state->generated_present_count;
         generated_present_attempt_count =
             state->generated_present_attempt_count;
+        generated_acquire_miss_count =
+            state->generated_acquire_miss_count;
+        generated_bounded_acquire_count =
+            state->generated_bounded_acquire_count;
+        generated_acquire_timeout_count =
+            state->generated_acquire_timeout_count;
+        generated_acquire_error_count =
+            state->generated_acquire_error_count;
+        generated_same_image_count =
+            state->generated_same_image_count;
+        generated_record_failure_count =
+            state->generated_record_failure_count;
+        generated_submit_failure_count =
+            state->generated_submit_failure_count;
 
         dispatch.destroy_swapchain(device, swapchain, allocator);
     } else {
@@ -2595,18 +2616,35 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
                 static_cast<double>(generated_present_count) /
                 static_cast<double>(source_present_count);
 
-            char stats_message[320]{};
+            char stats_message[560]{};
             std::snprintf(
                 stats_message,
                 sizeof(stats_message),
                 "[OpenFrameGen] 2x presentation stats: "
                 "source=%llu, generated=%llu, attempts=%llu, "
-                "generated/source=%.3f.",
+                "generated/source=%.3f, acquire-miss=%llu, "
+                "bounded-acquire=%llu, acquire-timeout=%llu, "
+                "acquire-error=%llu, same-image=%llu, "
+                "record-fail=%llu, submit-fail=%llu.",
                 static_cast<unsigned long long>(source_present_count),
                 static_cast<unsigned long long>(generated_present_count),
                 static_cast<unsigned long long>(
                     generated_present_attempt_count),
-                generated_ratio);
+                generated_ratio,
+                static_cast<unsigned long long>(
+                    generated_acquire_miss_count),
+                static_cast<unsigned long long>(
+                    generated_bounded_acquire_count),
+                static_cast<unsigned long long>(
+                    generated_acquire_timeout_count),
+                static_cast<unsigned long long>(
+                    generated_acquire_error_count),
+                static_cast<unsigned long long>(
+                    generated_same_image_count),
+                static_cast<unsigned long long>(
+                    generated_record_failure_count),
+                static_cast<unsigned long long>(
+                    generated_submit_failure_count));
             log_message(stats_message);
         }
     }
