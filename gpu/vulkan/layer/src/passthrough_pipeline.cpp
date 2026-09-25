@@ -1172,6 +1172,82 @@ bool VulkanPassthroughPipeline::initialize(
                 destroy();
                 return false;
             }
+
+            const VkBufferCreateInfo warp_validation_buffer_info{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .size = sizeof(WarpValidationSample),
+                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+            };
+
+            if (create_buffer_(
+                    device_,
+                    &warp_validation_buffer_info,
+                    nullptr,
+                    &slot.warp_validation_buffer) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            VkMemoryRequirements warp_validation_requirements{};
+            get_buffer_memory_requirements_(
+                device_,
+                slot.warp_validation_buffer,
+                &warp_validation_requirements);
+
+            std::uint32_t warp_validation_memory_type = UINT32_MAX;
+
+            for (std::uint32_t memory_index = 0;
+                 memory_index < memory_properties_.memoryTypeCount;
+                 ++memory_index) {
+                const bool compatible =
+                    (warp_validation_requirements.memoryTypeBits &
+                     (1u << memory_index)) != 0;
+                const bool host_coherent =
+                    (memory_properties_.memoryTypes[memory_index]
+                         .propertyFlags &
+                     validation_memory_flags) ==
+                    validation_memory_flags;
+
+                if (compatible && host_coherent) {
+                    warp_validation_memory_type = memory_index;
+                    break;
+                }
+            }
+
+            if (warp_validation_memory_type == UINT32_MAX) {
+                destroy();
+                return false;
+            }
+
+            const VkMemoryAllocateInfo warp_validation_allocation_info{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .allocationSize = warp_validation_requirements.size,
+                .memoryTypeIndex = warp_validation_memory_type,
+            };
+
+            if (allocate_memory_(
+                    device_,
+                    &warp_validation_allocation_info,
+                    nullptr,
+                    &slot.warp_validation_memory) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            if (bind_buffer_memory_(
+                    device_,
+                    slot.warp_validation_buffer,
+                    slot.warp_validation_memory,
+                    0) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
         }
 
         const VkDescriptorImageInfo source_descriptor{
