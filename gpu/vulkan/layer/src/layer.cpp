@@ -1445,6 +1445,7 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateDevice(
     OFG_LOAD_DEVICE(vkCreateSwapchainKHR, create_swapchain);
     OFG_LOAD_DEVICE(vkDestroySwapchainKHR, destroy_swapchain);
     OFG_LOAD_DEVICE(vkGetSwapchainImagesKHR, get_swapchain_images);
+    OFG_LOAD_DEVICE(vkAcquireNextImageKHR, acquire_next_image);
     OFG_LOAD_DEVICE(vkCreateImage, create_image);
     OFG_LOAD_DEVICE(vkDestroyImage, destroy_image);
     OFG_LOAD_DEVICE(vkGetImageMemoryRequirements, get_image_memory_requirements);
@@ -1459,6 +1460,7 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateDevice(
     OFG_LOAD_DEVICE(vkEndCommandBuffer, end_command_buffer);
     OFG_LOAD_DEVICE(vkCmdPipelineBarrier, cmd_pipeline_barrier);
     OFG_LOAD_DEVICE(vkCmdCopyImage, cmd_copy_image);
+    OFG_LOAD_DEVICE(vkCmdBlitImage, cmd_blit_image);
     OFG_LOAD_DEVICE(vkCreateSemaphore, create_semaphore);
     OFG_LOAD_DEVICE(vkDestroySemaphore, destroy_semaphore);
     OFG_LOAD_DEVICE(vkCreateFence, create_fence);
