@@ -2,6 +2,10 @@ if(NOT DEFINED INPUT OR NOT DEFINED OUTPUT)
     message(FATAL_ERROR "embed_spirv.cmake requires INPUT and OUTPUT")
 endif()
 
+if(NOT DEFINED SYMBOL)
+    set(SYMBOL "Passthrough")
+endif()
+
 file(READ "${INPUT}" SPIRV_HEX HEX)
 string(LENGTH "${SPIRV_HEX}" HEX_LENGTH)
 
@@ -12,7 +16,7 @@ endif()
 math(EXPR BYTE_COUNT "${HEX_LENGTH} / 2")
 math(EXPR LAST_BYTE "${BYTE_COUNT} - 1")
 
-set(CONTENT "#pragma once\n\n#include <cstddef>\n#include <cstdint>\n\nnamespace ofg::vulkan::generated {\n\nalignas(4) inline constexpr std::uint8_t kPassthroughSpirv[] = {\n    ")
+set(CONTENT "#pragma once\n\n#include <cstddef>\n#include <cstdint>\n\nnamespace ofg::vulkan::generated {\n\nalignas(4) inline constexpr std::uint8_t k${SYMBOL}Spirv[] = {\n    ")
 
 foreach(INDEX RANGE 0 ${LAST_BYTE})
     math(EXPR OFFSET "${INDEX} * 2")
@@ -29,5 +33,5 @@ foreach(INDEX RANGE 0 ${LAST_BYTE})
     endif()
 endforeach()
 
-string(APPEND CONTENT "\n};\n\ninline constexpr std::size_t kPassthroughSpirvSize = sizeof(kPassthroughSpirv);\n\n} // namespace ofg::vulkan::generated\n")
+string(APPEND CONTENT "\n};\n\ninline constexpr std::size_t k${SYMBOL}SpirvSize = sizeof(k${SYMBOL}Spirv);\n\n} // namespace ofg::vulkan::generated\n")
 file(WRITE "${OUTPUT}" "${CONTENT}")
