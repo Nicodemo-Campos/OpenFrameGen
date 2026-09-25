@@ -37,6 +37,12 @@ if(OFG_GLSLC_EXECUTABLE)
     set(OFG_SHARPEN_HEADER
         "${OFG_GENERATED_SHADER_DIR}/sharpen_spv.hpp"
     )
+    set(OFG_MOTION_SPV
+        "${OFG_GENERATED_SHADER_DIR}/motion_estimation.comp.spv"
+    )
+    set(OFG_MOTION_HEADER
+        "${OFG_GENERATED_SHADER_DIR}/motion_estimation_spv.hpp"
+    )
 
     add_custom_command(
         OUTPUT "${OFG_PASSTHROUGH_SPV}"
@@ -90,11 +96,38 @@ if(OFG_GLSLC_EXECUTABLE)
         VERBATIM
     )
 
+    add_custom_command(
+        OUTPUT "${OFG_MOTION_SPV}"
+        COMMAND
+            "${OFG_GLSLC_EXECUTABLE}"
+            -fshader-stage=compute
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/motion_estimation.comp"
+            -o "${OFG_MOTION_SPV}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/motion_estimation.comp"
+        VERBATIM
+    )
+
+    add_custom_command(
+        OUTPUT "${OFG_MOTION_HEADER}"
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DINPUT=${OFG_MOTION_SPV}"
+            "-DOUTPUT=${OFG_MOTION_HEADER}"
+            "-DSYMBOL=MotionEstimation"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+        DEPENDS
+            "${OFG_MOTION_SPV}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+        VERBATIM
+    )
+
     target_sources(
         ofg_vulkan_layer
         PRIVATE
             "${OFG_PASSTHROUGH_HEADER}"
             "${OFG_SHARPEN_HEADER}"
+            "${OFG_MOTION_HEADER}"
     )
 
     target_include_directories(

@@ -1,0 +1,99 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D previous_frame;
+layout(set = 0, binding = 1) uniform sampler2D current_frame;
+layout(set = 0, binding = 2, rgba32f) writeonly uniform image2D motion_field;
+
+const int block_size = 8;
+const int search_radius = 4;
+
+float luminance(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+float block_error(ivec2 block_origin, ivec2 previous_offset) {
+    const ivec2 extent = textureSize(current_frame, 0);
+    const ivec2 max_coordinate = extent - ivec2(1);
+
+    float error = 0.0;
+
+    // Sample a 4x4 grid inside each 8x8 block. This keeps the first
+    // prototype inexpensive while still producing a useful motion field.
+    for (int y = 1; y < block_size; y += 2) {
+        for (int x = 1; x < block_size; x += 2) {
+            const ivec2 current_coordinate =
+                clamp(
+                    block_origin + ivec2(x, y),
+                    ivec2(0),
+                    max_coordinate);
+            const ivec2 previous_coordinate =
+                clamp(
+                    current_coordinate + previous_offset,
+                    ivec2(0),
+                    max_coordinate);
+
+            const float current_luma =
+                luminance(
+                    texelFetch(
+                        current_frame,
+                        current_coordinate,
+                        0).rgb);
+            const float previous_luma =
+                luminance(
+                    texelFetch(
+                        previous_frame,
+                        previous_coordinate,
+                        0).rgb);
+
+            error += abs(current_luma - previous_luma);
+        }
+    }
+
+    return error;
+}
+
+void main() {
+    const ivec2 field_coordinate =
+        ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 field_extent =
+        imageSize(motion_field);
+
+    if (field_coordinate.x >= field_extent.x ||
+        field_coordinate.y >= field_extent.y) {
+        return;
+    }
+
+    const ivec2 block_origin =
+        field_coordinate * block_size;
+
+    float best_error = 1e30;
+    ivec2 best_previous_offset = ivec2(0);
+
+    for (int dy = -search_radius; dy <= search_radius; ++dy) {
+        for (int dx = -search_radius; dx <= search_radius; ++dx) {
+            const ivec2 candidate = ivec2(dx, dy);
+            const float error =
+                block_error(block_origin, candidate);
+
+            if (error < best_error) {
+                best_error = error;
+                best_previous_offset = candidate;
+            }
+        }
+    }
+
+    // A current block that best matches previous(x + offset) moved by
+    // -offset between frames. Store motion in output-resolution pixels.
+    const vec2 motion =
+        vec2(-best_previous_offset);
+
+    const float mean_error =
+        best_error / 16.0;
+
+    imageStore(
+        motion_field,
+        field_coordinate,
+        vec4(motion, mean_error, 1.0));
+}

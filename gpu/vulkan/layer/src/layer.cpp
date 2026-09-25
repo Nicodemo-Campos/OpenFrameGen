@@ -129,6 +129,7 @@ struct SwapchainState {
     bool first_passthrough_logged = false;
     bool first_sharpen_logged = false;
     bool first_history_logged = false;
+    bool first_motion_logged = false;
     bool first_timing_logged = false;
     bool first_present_logged = false;
 };
@@ -375,6 +376,7 @@ template <typename Dispatchable>
 
     VkFormatProperties source_properties{};
     VkFormatProperties output_properties{};
+    VkFormatProperties motion_properties{};
 
     instance_dispatch.get_physical_device_format_properties(
         dispatch.physical_device,
@@ -385,6 +387,11 @@ template <typename Dispatchable>
         dispatch.physical_device,
         VK_FORMAT_R8G8B8A8_UNORM,
         &output_properties);
+
+    instance_dispatch.get_physical_device_format_properties(
+        dispatch.physical_device,
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        &motion_properties);
 
     VkFormatFeatureFlags required_source =
         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
@@ -408,7 +415,17 @@ template <typename Dispatchable>
         (output_properties.optimalTilingFeatures & required_output) ==
         required_output;
 
-    return source_supported && output_supported;
+    constexpr VkFormatFeatureFlags required_motion =
+        VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+
+    const bool motion_supported =
+        (motion_properties.optimalTilingFeatures & required_motion) ==
+        required_motion;
+
+    return source_supported &&
+           output_supported &&
+           motion_supported;
 }
 
 [[nodiscard]] std::uint32_t find_memory_type(
@@ -2029,6 +2046,26 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                     history_extent.width,
                                     history_extent.height);
                                 log_message(history_message);
+                            }
+
+                            if (state->passthrough->motion_field_ready() &&
+                                !state->first_motion_logged) {
+                                state->first_motion_logged = true;
+
+                                const VkExtent2D motion_extent =
+                                    state->passthrough
+                                        ->motion_field_extent();
+
+                                char motion_message[256]{};
+                                std::snprintf(
+                                    motion_message,
+                                    sizeof(motion_message),
+                                    "[OpenFrameGen] First Vulkan motion "
+                                    "estimation field ready: %ux%u "
+                                    "blocks (8x8 pixels, search radius=4).",
+                                    motion_extent.width,
+                                    motion_extent.height);
+                                log_message(motion_message);
                             }
                         }
                     } else {
