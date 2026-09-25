@@ -1929,6 +1929,26 @@ bool VulkanPassthroughPipeline::motion_validation_enabled() const noexcept {
     return motion_validation_enabled_;
 }
 
+bool VulkanPassthroughPipeline::bidirectional_warp_enabled() const noexcept {
+    return warp_pipeline_ != VK_NULL_HANDLE &&
+           warp_pipeline_layout_ != VK_NULL_HANDLE &&
+           warp_descriptor_set_layout_ != VK_NULL_HANDLE;
+}
+
+bool VulkanPassthroughPipeline::interpolated_frame_ready() const noexcept {
+    if (!bidirectional_warp_enabled() ||
+        history_frame_count_ < 2 ||
+        warp_outputs_.empty()) {
+        return false;
+    }
+
+    const std::uint32_t latest_index =
+        (history_write_index_ + 1u) %
+        static_cast<std::uint32_t>(warp_outputs_.size());
+
+    return warp_outputs_[latest_index].initialized;
+}
+
 bool VulkanPassthroughPipeline::read_motion_validation(
     std::uint32_t slot_index,
     MotionValidationSample& sample) noexcept {
@@ -1988,6 +2008,11 @@ void VulkanPassthroughPipeline::commit_frame_history() noexcept {
 
     if (recorded_motion) {
         motion_fields_[history_write_index_].initialized = true;
+
+        if (bidirectional_warp_enabled() &&
+            history_write_index_ < warp_outputs_.size()) {
+            warp_outputs_[history_write_index_].initialized = true;
+        }
     }
 
     ++history_frame_count_;
