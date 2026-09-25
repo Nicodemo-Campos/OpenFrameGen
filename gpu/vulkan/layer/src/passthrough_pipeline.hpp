@@ -30,6 +30,11 @@ struct MotionValidationSample {
     float valid = 0.0F;
 };
 
+struct WarpValidationSample {
+    std::uint32_t midpoint_rgba8 = 0;
+    std::uint32_t occlusion_rgba8 = 0;
+};
+
 class VulkanPassthroughPipeline {
 public:
     VulkanPassthroughPipeline() = default;
@@ -75,6 +80,9 @@ public:
         MotionValidationSample& sample) noexcept;
     [[nodiscard]] bool bidirectional_warp_enabled() const noexcept;
     [[nodiscard]] bool interpolated_frame_ready() const noexcept;
+    [[nodiscard]] bool read_warp_validation(
+        std::uint32_t slot_index,
+        WarpValidationSample& sample) noexcept;
     void commit_frame_history() noexcept;
     [[nodiscard]] VkExtent2D output_extent() const noexcept;
     [[nodiscard]] bool record(
@@ -121,6 +129,9 @@ private:
         VkBuffer motion_validation_buffer = VK_NULL_HANDLE;
         VkDeviceMemory motion_validation_memory = VK_NULL_HANDLE;
         bool motion_validation_written = false;
+        VkBuffer warp_validation_buffer = VK_NULL_HANDLE;
+        VkDeviceMemory warp_validation_memory = VK_NULL_HANDLE;
+        bool warp_validation_written = false;
     };
 
     [[nodiscard]] std::uint32_t find_memory_type(
