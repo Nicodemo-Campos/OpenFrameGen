@@ -551,6 +551,11 @@ template <typename Dispatchable>
         }
     }
 
+    if (state.synthetic_submission_pending &&
+        state.synthetic_fence != VK_NULL_HANDLE) {
+        pending_fences.push_back(state.synthetic_fence);
+    }
+
     if (pending_fences.empty()) {
         return true;
     }
@@ -576,6 +581,7 @@ template <typename Dispatchable>
             slot.has_submission = false;
         }
     }
+    state.synthetic_submission_pending = false;
 
     return true;
 }
@@ -600,6 +606,34 @@ void destroy_copy_resources_unchecked(
             }
 
             slot.copy_complete = VK_NULL_HANDLE;
+        }
+
+        if (slot.generated_present_ready != VK_NULL_HANDLE) {
+            if (retired_present_semaphores != nullptr &&
+                slot.generated_used_for_present) {
+                retired_present_semaphores->push_back(
+                    slot.generated_present_ready);
+            } else if (dispatch.destroy_semaphore != nullptr) {
+                dispatch.destroy_semaphore(
+                    dispatch.device,
+                    slot.generated_present_ready,
+                    nullptr);
+            }
+            slot.generated_present_ready = VK_NULL_HANDLE;
+        }
+
+        if (slot.source_present_ready != VK_NULL_HANDLE) {
+            if (retired_present_semaphores != nullptr &&
+                slot.source_used_for_present) {
+                retired_present_semaphores->push_back(
+                    slot.source_present_ready);
+            } else if (dispatch.destroy_semaphore != nullptr) {
+                dispatch.destroy_semaphore(
+                    dispatch.device,
+                    slot.source_present_ready,
+                    nullptr);
+            }
+            slot.source_present_ready = VK_NULL_HANDLE;
         }
 
         if (slot.fence != VK_NULL_HANDLE &&
@@ -629,6 +663,26 @@ void destroy_copy_resources_unchecked(
 
     state.copy_slots.clear();
 
+    if (state.synthetic_acquire != VK_NULL_HANDLE &&
+        dispatch.destroy_semaphore != nullptr) {
+        dispatch.destroy_semaphore(
+            dispatch.device,
+            state.synthetic_acquire,
+            nullptr);
+    }
+    state.synthetic_acquire = VK_NULL_HANDLE;
+
+    if (state.synthetic_fence != VK_NULL_HANDLE &&
+        dispatch.destroy_fence != nullptr) {
+        dispatch.destroy_fence(
+            dispatch.device,
+            state.synthetic_fence,
+            nullptr);
+    }
+    state.synthetic_fence = VK_NULL_HANDLE;
+    state.synthetic_command_buffer = VK_NULL_HANDLE;
+    state.synthetic_submission_pending = false;
+
     if (state.command_pool != VK_NULL_HANDLE &&
         dispatch.destroy_command_pool != nullptr) {
         dispatch.destroy_command_pool(
@@ -651,8 +705,12 @@ void destroy_copy_resources(
             state.copy_slots.begin(),
             state.copy_slots.end(),
             [](const CopySlot& slot) {
-                return slot.has_submission || slot.used_for_present;
-            });
+                return slot.has_submission ||
+                       slot.used_for_present ||
+                       slot.generated_used_for_present ||
+                       slot.source_used_for_present;
+            }) ||
+        state.synthetic_submission_pending;
 
     if (has_queue_references &&
         state.copy_queue != VK_NULL_HANDLE &&
