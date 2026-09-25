@@ -36,7 +36,7 @@ This roadmap describes direction, not release promises.
 - [x] Motion estimation prototype
 - [x] Bidirectional warping
 - [x] Occlusion handling
-- [ ] 2x interpolation
+- [x] 2x interpolation
 - [ ] Frame pacing and latency metrics
 
 ## Phase 4 — User experience
