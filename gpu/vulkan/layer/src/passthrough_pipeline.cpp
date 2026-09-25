@@ -60,7 +60,9 @@ bool VulkanPassthroughPipeline::build_available() noexcept {
 bool VulkanPassthroughPipeline::supports_source_format(
     VkFormat format) noexcept {
     return format == VK_FORMAT_B8G8R8A8_UNORM ||
-           format == VK_FORMAT_R8G8B8A8_UNORM;
+           format == VK_FORMAT_R8G8B8A8_SRGB ||
+           format == VK_FORMAT_R8G8B8A8_UNORM ||
+           format == VK_FORMAT_R8G8B8A8_SRGB;
 }
 
 bool VulkanPassthroughPipeline::load_functions(
