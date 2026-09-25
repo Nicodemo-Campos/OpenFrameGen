@@ -1589,6 +1589,7 @@ void retire_swapchain_copy_resources(
     std::uint32_t source_index,
     VkSemaphore copy_complete,
     bool cadence_plan_ready,
+    std::uint64_t acquire_wait_ns,
     VkResult& present_result) {
     if (!state.interpolate_2x_requested ||
         !state.transfer_dst_enabled ||
@@ -1632,7 +1633,7 @@ void retire_swapchain_copy_resources(
     const VkSwapchainKHR swapchain =
         original_present->pSwapchains[0];
 
-    const VkResult acquire_result =
+    VkResult acquire_result =
         dispatch.acquire_next_image(
             dispatch.device,
             swapchain,
@@ -1641,8 +1642,59 @@ void retire_swapchain_copy_resources(
             VK_NULL_HANDLE,
             &generated_index);
 
+    if (acquire_result == VK_NOT_READY ||
+        acquire_result == VK_TIMEOUT) {
+        ++state.generated_acquire_miss_count;
+
+        if (state.images.size() == 2 &&
+            acquire_wait_ns > 0) {
+            constexpr std::uint64_t min_wait_ns = 250'000u;
+            constexpr std::uint64_t max_wait_ns = 20'000'000u;
+            const std::uint64_t bounded_wait_ns =
+                std::clamp(
+                    acquire_wait_ns,
+                    min_wait_ns,
+                    max_wait_ns);
+
+            ++state.generated_bounded_acquire_count;
+
+            acquire_result =
+                dispatch.acquire_next_image(
+                    dispatch.device,
+                    swapchain,
+                    bounded_wait_ns,
+                    state.synthetic_acquire,
+                    VK_NULL_HANDLE,
+                    &generated_index);
+
+            if ((acquire_result == VK_SUCCESS ||
+                 acquire_result == VK_SUBOPTIMAL_KHR) &&
+                !state.first_bounded_acquire_logged) {
+                state.first_bounded_acquire_logged = true;
+
+                char acquire_message[320]{};
+                std::snprintf(
+                    acquire_message,
+                    sizeof(acquire_message),
+                    "[OpenFrameGen] First bounded 2x acquire succeeded: "
+                    "wait-budget=%.3f ms, image=%u.",
+                    static_cast<double>(bounded_wait_ns) /
+                        1'000'000.0,
+                    generated_index);
+                log_message(acquire_message);
+            }
+        }
+    }
+
+    if (acquire_result == VK_NOT_READY ||
+        acquire_result == VK_TIMEOUT) {
+        ++state.generated_acquire_timeout_count;
+        return false;
+    }
+
     if (acquire_result != VK_SUCCESS &&
         acquire_result != VK_SUBOPTIMAL_KHR) {
+        ++state.generated_acquire_error_count;
         return false;
     }
 
@@ -1667,6 +1719,9 @@ void retire_swapchain_copy_resources(
     if (generated_index >= state.copy_slots.size() ||
         generated_index >= state.images.size() ||
         generated_index == source_index) {
+        if (generated_index == source_index) {
+            ++state.generated_same_image_count;
+        }
         release_acquired_image();
         return false;
     }
@@ -1688,6 +1743,7 @@ void retire_swapchain_copy_resources(
             dispatch.device,
             1,
             &state.synthetic_fence) != VK_SUCCESS) {
+        ++state.generated_record_failure_count;
         release_acquired_image();
         return false;
     }
@@ -1724,6 +1780,7 @@ void retire_swapchain_copy_resources(
             1,
             &submit_info,
             state.synthetic_fence) != VK_SUCCESS) {
+        ++state.generated_submit_failure_count;
         release_acquired_image();
         return false;
     }
@@ -3163,6 +3220,9 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
             source_index,
             copy_complete,
             cadence_plan_ready,
+            cadence_plan_ready
+                ? cadence_plan.previous_to_interpolated_ns
+                : 0u,
             interpolated_present_result)) {
         return interpolated_present_result;
     }
