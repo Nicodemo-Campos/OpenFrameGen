@@ -2589,6 +2589,113 @@ bool VulkanPassthroughPipeline::record(
                 1,
                 &motion_ready);
         }
+
+        if (bidirectional_warp_enabled() &&
+            history_write_index_ < warp_outputs_.size()) {
+            auto& warp_output =
+                warp_outputs_[history_write_index_];
+
+            if (warp_output.image == VK_NULL_HANDLE ||
+                warp_output.descriptor_set == VK_NULL_HANDLE) {
+                return false;
+            }
+
+            const VkImageMemoryBarrier prepare_warp{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask =
+                    warp_output.initialized
+                        ? VK_ACCESS_SHADER_READ_BIT
+                        : 0,
+                .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .oldLayout =
+                    warp_output.initialized
+                        ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                        : VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = warp_output.image,
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            };
+
+            cmd_pipeline_barrier_(
+                command_buffer,
+                warp_output.initialized
+                    ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                    : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0,
+                0,
+                nullptr,
+                0,
+                nullptr,
+                1,
+                &prepare_warp);
+
+            cmd_bind_pipeline_(
+                command_buffer,
+                VK_PIPELINE_BIND_POINT_COMPUTE,
+                warp_pipeline_);
+
+            cmd_bind_descriptor_sets_(
+                command_buffer,
+                VK_PIPELINE_BIND_POINT_COMPUTE,
+                warp_pipeline_layout_,
+                0,
+                1,
+                &warp_output.descriptor_set,
+                0,
+                nullptr);
+
+            const std::uint32_t warp_group_count_x =
+                (output_extent_.width + 7u) / 8u;
+            const std::uint32_t warp_group_count_y =
+                (output_extent_.height + 7u) / 8u;
+
+            cmd_dispatch_(
+                command_buffer,
+                warp_group_count_x,
+                warp_group_count_y,
+                1);
+
+            const VkImageMemoryBarrier warp_ready{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = warp_output.image,
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            };
+
+            cmd_pipeline_barrier_(
+                command_buffer,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0,
+                0,
+                nullptr,
+                0,
+                nullptr,
+                1,
+                &warp_ready);
+        }
     }
 
     return true;
