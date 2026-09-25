@@ -11,6 +11,11 @@ target_include_directories(ofg_vulkan_layer
 
 target_compile_features(ofg_vulkan_layer PRIVATE cxx_std_20)
 
+target_link_libraries(ofg_vulkan_layer
+    PRIVATE
+        OpenFrameGen::Core
+)
+
 find_program(
     OFG_GLSLC_EXECUTABLE
     NAMES glslc glslc.exe
