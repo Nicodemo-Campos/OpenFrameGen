@@ -11,6 +11,11 @@
 
 namespace ofg::vulkan {
 
+enum class ScaleFilter : std::uint32_t {
+    Bilinear = 0,
+    Bicubic = 1,
+};
+
 class VulkanPassthroughPipeline {
 public:
     VulkanPassthroughPipeline() = default;
@@ -31,6 +36,7 @@ public:
         VkExtent2D source_extent,
         VkExtent2D output_extent,
         VkFormat source_format,
+        ScaleFilter filter,
         const std::vector<VkImage>& source_images) noexcept;
 
     [[nodiscard]] bool ready() const noexcept;
@@ -62,6 +68,7 @@ private:
     VkExtent2D source_extent_{};
     VkExtent2D output_extent_{};
     VkFormat source_format_ = VK_FORMAT_UNDEFINED;
+    ScaleFilter filter_ = ScaleFilter::Bilinear;
 
     PFN_vkCreateImage create_image_ = nullptr;
     PFN_vkDestroyImage destroy_image_ = nullptr;
