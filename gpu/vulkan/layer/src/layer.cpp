@@ -3158,6 +3158,7 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
 
     VkSemaphore copy_complete = VK_NULL_HANDLE;
     bool copy_submitted = false;
+    bool source_contains_generated = false;
 
     if (!state->first_present_logged) {
         state->first_present_logged = true;
@@ -3438,7 +3439,8 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                         dispatch,
                         *state,
                         image_index,
-                        slot) &&
+                        slot,
+                        source_contains_generated) &&
                     dispatch.reset_fences(
                         dispatch.device,
                         1,
