@@ -10,6 +10,7 @@
 
 #if OFG_VULKAN_PASSTHROUGH_ENABLED
 #include "passthrough_spv.hpp"
+#include "sharpen_spv.hpp"
 #endif
 
 #include <array>
@@ -153,6 +154,7 @@ bool VulkanPassthroughPipeline::initialize(
     VkExtent2D output_extent,
     VkFormat source_format,
     ScaleFilter filter,
+    float sharpening_strength,
     const std::vector<VkImage>& source_images) noexcept {
     destroy();
 
@@ -164,6 +166,7 @@ bool VulkanPassthroughPipeline::initialize(
     (void)output_extent;
     (void)source_format;
     (void)filter;
+    (void)sharpening_strength;
     (void)source_images;
     return false;
 #else
@@ -183,6 +186,7 @@ bool VulkanPassthroughPipeline::initialize(
     output_extent_ = output_extent;
     source_format_ = source_format;
     filter_ = filter;
+    sharpening_strength_ = sharpening_strength;
 
     if (!load_functions(get_device_proc_addr)) {
         destroy();
