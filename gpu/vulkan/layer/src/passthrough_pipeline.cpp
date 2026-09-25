@@ -1362,6 +1362,36 @@ bool VulkanPassthroughPipeline::initialize(
         }
     }
 
+    for (auto& warp_output : warp_outputs_) {
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_image_view_ != nullptr &&
+            warp_output.view != VK_NULL_HANDLE) {
+            destroy_image_view_(
+                device_,
+                warp_output.view,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_image_ != nullptr &&
+            warp_output.image != VK_NULL_HANDLE) {
+            destroy_image_(
+                device_,
+                warp_output.image,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            free_memory_ != nullptr &&
+            warp_output.memory != VK_NULL_HANDLE) {
+            free_memory_(
+                device_,
+                warp_output.memory,
+                nullptr);
+        }
+    }
+    warp_outputs_ = {};
+
     for (auto& motion_field : motion_fields_) {
         const VkImageCreateInfo motion_info{
             .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -2726,6 +2756,13 @@ void VulkanPassthroughPipeline::destroy() noexcept {
 
     if (device_ != VK_NULL_HANDLE &&
         destroy_pipeline_ != nullptr &&
+        warp_pipeline_ != VK_NULL_HANDLE) {
+        destroy_pipeline_(device_, warp_pipeline_, nullptr);
+    }
+    warp_pipeline_ = VK_NULL_HANDLE;
+
+    if (device_ != VK_NULL_HANDLE &&
+        destroy_pipeline_ != nullptr &&
         motion_pipeline_ != VK_NULL_HANDLE) {
         destroy_pipeline_(device_, motion_pipeline_, nullptr);
     }
@@ -2747,6 +2784,16 @@ void VulkanPassthroughPipeline::destroy() noexcept {
 
     if (device_ != VK_NULL_HANDLE &&
         destroy_pipeline_layout_ != nullptr &&
+        warp_pipeline_layout_ != VK_NULL_HANDLE) {
+        destroy_pipeline_layout_(
+            device_,
+            warp_pipeline_layout_,
+            nullptr);
+    }
+    warp_pipeline_layout_ = VK_NULL_HANDLE;
+
+    if (device_ != VK_NULL_HANDLE &&
+        destroy_pipeline_layout_ != nullptr &&
         motion_pipeline_layout_ != VK_NULL_HANDLE) {
         destroy_pipeline_layout_(
             device_,
@@ -2764,6 +2811,16 @@ void VulkanPassthroughPipeline::destroy() noexcept {
             nullptr);
     }
     pipeline_layout_ = VK_NULL_HANDLE;
+
+    if (device_ != VK_NULL_HANDLE &&
+        destroy_descriptor_set_layout_ != nullptr &&
+        warp_descriptor_set_layout_ != VK_NULL_HANDLE) {
+        destroy_descriptor_set_layout_(
+            device_,
+            warp_descriptor_set_layout_,
+            nullptr);
+    }
+    warp_descriptor_set_layout_ = VK_NULL_HANDLE;
 
     if (device_ != VK_NULL_HANDLE &&
         destroy_descriptor_set_layout_ != nullptr &&
