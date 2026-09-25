@@ -91,6 +91,7 @@ bool VulkanPassthroughPipeline::load_functions(
     OFG_LOAD(vkCmdResetQueryPool, cmd_reset_query_pool_);
     OFG_LOAD(vkCmdWriteTimestamp, cmd_write_timestamp_);
     OFG_LOAD(vkCmdPipelineBarrier, cmd_pipeline_barrier_);
+    OFG_LOAD(vkCmdCopyImage, cmd_copy_image_);
     OFG_LOAD(vkCmdBindPipeline, cmd_bind_pipeline_);
     OFG_LOAD(vkCmdBindDescriptorSets, cmd_bind_descriptor_sets_);
     OFG_LOAD(vkCmdDispatch, cmd_dispatch_);
@@ -120,6 +121,7 @@ bool VulkanPassthroughPipeline::load_functions(
            create_compute_pipelines_ != nullptr &&
            destroy_pipeline_ != nullptr &&
            cmd_pipeline_barrier_ != nullptr &&
+           cmd_copy_image_ != nullptr &&
            cmd_bind_pipeline_ != nullptr &&
            cmd_bind_descriptor_sets_ != nullptr &&
            cmd_dispatch_ != nullptr;
