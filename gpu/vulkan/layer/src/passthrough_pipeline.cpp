@@ -22,6 +22,7 @@ namespace ofg::vulkan {
 namespace {
 
 constexpr VkFormat kOutputFormat = VK_FORMAT_R8G8B8A8_UNORM;
+constexpr std::uint32_t kTimingQueriesPerSlot = 3;
 
 template <typename Function>
 [[nodiscard]] Function load_device_function(
@@ -439,6 +440,34 @@ bool VulkanPassthroughPipeline::initialize(
 
     const std::uint32_t slot_count =
         static_cast<std::uint32_t>(source_images.size());
+
+    const bool timing_functions_available =
+        create_query_pool_ != nullptr &&
+        destroy_query_pool_ != nullptr &&
+        get_query_pool_results_ != nullptr &&
+        cmd_reset_query_pool_ != nullptr &&
+        cmd_write_timestamp_ != nullptr;
+
+    if (timing_functions_available &&
+        timestamp_period_ns_ > 0.0F &&
+        timestamp_valid_bits_ > 0) {
+        const VkQueryPoolCreateInfo query_pool_info{
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .queryType = VK_QUERY_TYPE_TIMESTAMP,
+            .queryCount = slot_count * kTimingQueriesPerSlot,
+            .pipelineStatistics = 0,
+        };
+
+        if (create_query_pool_(
+                device_,
+                &query_pool_info,
+                nullptr,
+                &timing_query_pool_) != VK_SUCCESS) {
+            timing_query_pool_ = VK_NULL_HANDLE;
+        }
+    }
 
     const std::uint32_t descriptor_multiplier =
         sharpening_strength_ > 0.0F ? 2u : 1u;
