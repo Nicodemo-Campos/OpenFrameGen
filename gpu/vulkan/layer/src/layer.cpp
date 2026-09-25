@@ -2388,6 +2388,29 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
     if (state != nullptr) {
         std::scoped_lock state_lock{state->mutex};
 
+        // GPU submission fences do not prove that queued presentation
+        // operations have finished referencing swapchain state. The
+        // experimental 2x path injects an additional vkQueuePresentKHR
+        // per source frame, so conservatively drain that queue before
+        // destroying a swapchain that actually presented generated frames.
+        if (state->generated_present_count > 0 &&
+            state->copy_queue != VK_NULL_HANDLE &&
+            dispatch.queue_wait_idle != nullptr) {
+            const VkResult drain_result =
+                dispatch.queue_wait_idle(state->copy_queue);
+
+            if (drain_result == VK_SUCCESS) {
+                state->synthetic_submission_pending = false;
+                log_message(
+                    "[OpenFrameGen] 2x presentation queue drained "
+                    "before swapchain destruction.");
+            } else {
+                log_message(
+                    "[OpenFrameGen] 2x presentation queue drain failed "
+                    "during swapchain destruction.");
+            }
+        }
+
         retire_swapchain_copy_resources(
             dispatch,
             *state,
