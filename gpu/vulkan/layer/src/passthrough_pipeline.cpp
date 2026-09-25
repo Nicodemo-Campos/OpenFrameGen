@@ -847,6 +847,15 @@ bool VulkanPassthroughPipeline::ready() const noexcept {
     return ready_;
 }
 
+bool VulkanPassthroughPipeline::sharpening_enabled() const noexcept {
+    return sharpen_pipeline_ != VK_NULL_HANDLE &&
+           sharpening_strength_ > 0.0F;
+}
+
+float VulkanPassthroughPipeline::sharpening_strength() const noexcept {
+    return sharpening_strength_;
+}
+
 VkExtent2D VulkanPassthroughPipeline::output_extent() const noexcept {
     return output_extent_;
 }
@@ -941,6 +950,80 @@ bool VulkanPassthroughPipeline::record(
         group_count_y,
         1);
 
+    if (sharpening_enabled()) {
+        std::array<VkImageMemoryBarrier, 2> sharpen_barriers{
+            VkImageMemoryBarrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = slot.output,
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            },
+            VkImageMemoryBarrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = 0,
+                .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = slot.sharpened_output,
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            },
+        };
+
+        cmd_pipeline_barrier_(
+            command_buffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,
+            0,
+            nullptr,
+            0,
+            nullptr,
+            static_cast<std::uint32_t>(sharpen_barriers.size()),
+            sharpen_barriers.data());
+
+        cmd_bind_pipeline_(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            sharpen_pipeline_);
+
+        cmd_bind_descriptor_sets_(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipeline_layout_,
+            0,
+            1,
+            &slot.sharpen_descriptor_set,
+            0,
+            nullptr);
+
+        cmd_dispatch_(
+            command_buffer,
+            group_count_x,
+            group_count_y,
+            1);
+    }
+
     return true;
 }
 
@@ -956,6 +1039,13 @@ void VulkanPassthroughPipeline::destroy() noexcept {
             nullptr);
     }
     descriptor_pool_ = VK_NULL_HANDLE;
+
+    if (device_ != VK_NULL_HANDLE &&
+        destroy_pipeline_ != nullptr &&
+        sharpen_pipeline_ != VK_NULL_HANDLE) {
+        destroy_pipeline_(device_, sharpen_pipeline_, nullptr);
+    }
+    sharpen_pipeline_ = VK_NULL_HANDLE;
 
     if (device_ != VK_NULL_HANDLE &&
         destroy_pipeline_ != nullptr &&
@@ -992,6 +1082,33 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     sampler_ = VK_NULL_HANDLE;
 
     for (auto& slot : slots_) {
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_image_view_ != nullptr &&
+            slot.sharpened_output_view != VK_NULL_HANDLE) {
+            destroy_image_view_(
+                device_,
+                slot.sharpened_output_view,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_image_ != nullptr &&
+            slot.sharpened_output != VK_NULL_HANDLE) {
+            destroy_image_(
+                device_,
+                slot.sharpened_output,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            free_memory_ != nullptr &&
+            slot.sharpened_output_memory != VK_NULL_HANDLE) {
+            free_memory_(
+                device_,
+                slot.sharpened_output_memory,
+                nullptr);
+        }
+
         if (device_ != VK_NULL_HANDLE &&
             destroy_image_view_ != nullptr &&
             slot.output_view != VK_NULL_HANDLE) {
@@ -1033,6 +1150,7 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     output_extent_ = {};
     source_format_ = VK_FORMAT_UNDEFINED;
     filter_ = ScaleFilter::Bilinear;
+    sharpening_strength_ = 0.0F;
 }
 
 } // namespace ofg::vulkan
