@@ -293,6 +293,24 @@ template <typename Dispatchable>
     return scale;
 }
 
+[[nodiscard]] ofg::vulkan::ScaleFilter configured_scale_filter() noexcept {
+    const char* value = std::getenv("OFG_SCALE_FILTER");
+
+    if (value != nullptr &&
+        std::strcmp(value, "bicubic") == 0) {
+        return ofg::vulkan::ScaleFilter::Bicubic;
+    }
+
+    return ofg::vulkan::ScaleFilter::Bilinear;
+}
+
+[[nodiscard]] const char* scale_filter_name(
+    ofg::vulkan::ScaleFilter filter) noexcept {
+    return filter == ofg::vulkan::ScaleFilter::Bicubic
+        ? "bicubic"
+        : "bilinear";
+}
+
 [[nodiscard]] VkExtent2D scaled_extent(
     VkExtent2D source,
     float scale) noexcept {
@@ -312,9 +330,10 @@ template <typename Dispatchable>
     };
 }
 
-[[nodiscard]] bool supports_bilinear_scaling(
+[[nodiscard]] bool supports_scaling(
     const DeviceDispatch& dispatch,
-    VkFormat source_format) {
+    VkFormat source_format,
+    ofg::vulkan::ScaleFilter filter) {
     InstanceDispatch instance_dispatch{};
 
     if (!find_instance_dispatch(
@@ -337,9 +356,13 @@ template <typename Dispatchable>
         VK_FORMAT_R8G8B8A8_UNORM,
         &output_properties);
 
-    constexpr VkFormatFeatureFlags required_source =
-        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    VkFormatFeatureFlags required_source =
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+
+    if (filter == ofg::vulkan::ScaleFilter::Bilinear) {
+        required_source |=
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    }
 
     const bool source_supported =
         (source_properties.optimalTilingFeatures & required_source) ==
@@ -608,6 +631,7 @@ void retire_swapchain_copy_resources(
     state.copy_queue_family = queue_state.family_index;
 
     const float scale_factor = configured_scale_factor();
+    const auto scale_filter = configured_scale_filter();
     const VkExtent2D output_extent =
         scaled_extent(state.extent, scale_factor);
 
@@ -616,7 +640,10 @@ void retire_swapchain_copy_resources(
         (queue_state.capabilities & VK_QUEUE_COMPUTE_BIT) != 0 &&
         ofg::vulkan::VulkanPassthroughPipeline::supports_source_format(
             state.format) &&
-        supports_bilinear_scaling(dispatch, state.format);
+        supports_scaling(
+            dispatch,
+            state.format,
+            scale_filter);
 
     const VkCommandPoolCreateInfo pool_info{
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -820,6 +847,7 @@ void retire_swapchain_copy_resources(
                 state.extent,
                 output_extent,
                 state.format,
+                scale_filter,
                 source_images)) {
             state.passthrough = std::move(passthrough);
 
@@ -827,9 +855,10 @@ void retire_swapchain_copy_resources(
             std::snprintf(
                 compute_message,
                 sizeof(compute_message),
-                "[OpenFrameGen] Vulkan bilinear scaler ready: "
+                "[OpenFrameGen] Vulkan %s scaler ready: "
                 "%ux%u -> %ux%u, scale=%.3f, images=%zu, "
                 "local size=8x8.",
+                scale_filter_name(scale_filter),
                 state.extent.width,
                 state.extent.height,
                 output_extent.width,
@@ -839,8 +868,8 @@ void retire_swapchain_copy_resources(
             log_message(compute_message);
         } else {
             log_message(
-                "[OpenFrameGen] Vulkan bilinear scaler initialization "
-                "failed; frame copy remains active.");
+                "[OpenFrameGen] Vulkan scaler initialization failed; "
+                "frame copy remains active.");
         }
     }
 
@@ -1874,8 +1903,8 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             !state->first_passthrough_logged) {
                             state->first_passthrough_logged = true;
                             log_message(
-                                "[OpenFrameGen] First Vulkan bilinear "
-                                "scaler dispatch submitted.");
+                                "[OpenFrameGen] First Vulkan scaler "
+                                "dispatch submitted.");
                         }
                     } else {
                         log_message(
