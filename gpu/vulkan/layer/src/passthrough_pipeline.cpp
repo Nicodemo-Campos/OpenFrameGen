@@ -2084,6 +2084,16 @@ VkImage VulkanPassthroughPipeline::latest_interpolated_image() const noexcept {
     return warp_outputs_[latest_index].image;
 }
 
+VkImage VulkanPassthroughPipeline::pending_interpolated_image() const noexcept {
+    if (!bidirectional_warp_enabled() ||
+        history_frame_count_ < 1 ||
+        history_write_index_ >= warp_outputs_.size()) {
+        return VK_NULL_HANDLE;
+    }
+
+    return warp_outputs_[history_write_index_].image;
+}
+
 bool VulkanPassthroughPipeline::read_warp_validation(
     std::uint32_t slot_index,
     WarpValidationSample& sample) noexcept {
