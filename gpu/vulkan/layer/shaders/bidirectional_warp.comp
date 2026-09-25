@@ -2,6 +2,8 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
+layout(constant_id = 0) const int synthetic_validation = 0;
+
 layout(set = 0, binding = 0) uniform sampler2D previous_frame;
 layout(set = 0, binding = 1) uniform sampler2D current_frame;
 layout(set = 0, binding = 2) uniform sampler2D motion_field;
@@ -9,6 +11,7 @@ layout(set = 0, binding = 3, rgba8) writeonly uniform image2D interpolated_frame
 
 const float interpolation_t = 0.5;
 const int motion_block_size = 8;
+const vec2 validation_motion = vec2(3.0, -2.0);
 
 vec4 sample_bilinear(sampler2D image_sampler, vec2 pixel_position) {
     const ivec2 extent = textureSize(image_sampler, 0);
@@ -37,6 +40,47 @@ bool inside_frame(vec2 position, ivec2 extent) {
            position.y >= 0.0 &&
            position.x <= float(extent.x - 1) &&
            position.y <= float(extent.y - 1);
+}
+
+vec4 validation_base_color(vec2 position, ivec2 extent) {
+    const vec2 denominator =
+        max(vec2(extent - ivec2(1)), vec2(1.0));
+    const vec2 uv =
+        clamp(position / denominator, vec2(0.0), vec2(1.0));
+
+    return vec4(uv.x, uv.y, 0.25, 1.0);
+}
+
+bool validation_occluder(vec2 position, ivec2 extent) {
+    const vec2 center =
+        vec2(extent) * 0.5;
+
+    return position.x >= center.x + 8.0 &&
+           position.x <= center.x + 32.0 &&
+           abs(position.y - center.y) <= 8.0;
+}
+
+vec4 previous_color_at(vec2 position, ivec2 extent) {
+    if (synthetic_validation != 0) {
+        return validation_base_color(position, extent);
+    }
+
+    return sample_bilinear(previous_frame, position);
+}
+
+vec4 current_color_at(vec2 position, ivec2 extent) {
+    if (synthetic_validation != 0) {
+        if (validation_occluder(position, extent)) {
+            return vec4(0.0, 0.0, 1.0, 1.0);
+        }
+
+        // Current(x) = Previous(x - motion).
+        return validation_base_color(
+            position - validation_motion,
+            extent);
+    }
+
+    return sample_bilinear(current_frame, position);
 }
 
 vec4 motion_sample(ivec2 coordinate, ivec2 field_extent) {
@@ -79,6 +123,16 @@ float motion_discontinuity(
             length(center_motion - down)));
 }
 
+bool validation_occlusion_probe(
+    ivec2 output_coordinate,
+    ivec2 output_extent) {
+    const ivec2 center = output_extent / 2;
+
+    return output_coordinate.x >= center.x + 8 &&
+           output_coordinate.x <= center.x + 32 &&
+           abs(output_coordinate.y - center.y) <= 8;
+}
+
 void main() {
     const ivec2 output_coordinate =
         ivec2(gl_GlobalInvocationID.xy);
@@ -105,13 +159,19 @@ void main() {
 
     // Motion is stored in processed-frame pixels as current - previous.
     const vec2 motion = field_sample.xy;
-    const float mean_match_error = field_sample.z;
+    float mean_match_error = field_sample.z;
+
+    if (synthetic_validation != 0 &&
+        validation_occlusion_probe(
+            output_coordinate,
+            output_extent)) {
+        // Deliberately lower confidence inside the synthetic occluder.
+        mean_match_error = 1.0;
+    }
 
     const vec2 output_position =
         vec2(output_coordinate);
 
-    // At t=0.5, trace from the midpoint back toward the previous frame
-    // and forward toward the current frame.
     const vec2 previous_position =
         output_position - motion * interpolation_t;
     const vec2 current_position =
@@ -123,13 +183,13 @@ void main() {
         inside_frame(current_position, output_extent);
 
     const vec4 previous_color =
-        sample_bilinear(
-            previous_frame,
-            previous_position);
+        previous_color_at(
+            previous_position,
+            output_extent);
     const vec4 current_color =
-        sample_bilinear(
-            current_frame,
-            current_position);
+        current_color_at(
+            current_position,
+            output_extent);
 
     vec4 output_color;
 
@@ -139,10 +199,14 @@ void main() {
         output_color = current_color;
     } else if (!previous_valid && !current_valid) {
         output_color =
-            texelFetch(
-                current_frame,
-                output_coordinate,
-                0);
+            synthetic_validation != 0
+                ? current_color_at(
+                    output_position,
+                    output_extent)
+                : texelFetch(
+                    current_frame,
+                    output_coordinate,
+                    0);
     } else {
         const float disagreement =
             motion_discontinuity(
@@ -150,10 +214,6 @@ void main() {
                 field_extent,
                 motion);
 
-        // High block-matching error or a sharp change in neighbouring
-        // vectors is a useful first-order indicator of an occlusion or
-        // motion boundary. In uncertain regions prefer the current frame
-        // instead of blindly averaging two potentially unrelated samples.
         const float match_confidence =
             1.0 - smoothstep(
                 0.02,
