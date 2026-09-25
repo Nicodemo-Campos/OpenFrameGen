@@ -634,6 +634,113 @@ bool VulkanPassthroughPipeline::initialize(
             return false;
         }
 
+        if (sharpening_strength_ > 0.0F) {
+            const VkImageCreateInfo sharpen_output_info{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = kOutputFormat,
+                .extent = VkExtent3D{
+                    output_extent_.width,
+                    output_extent_.height,
+                    1,
+                },
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage =
+                    VK_IMAGE_USAGE_STORAGE_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+
+            if (create_image_(
+                    device_,
+                    &sharpen_output_info,
+                    nullptr,
+                    &slot.sharpened_output) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            VkMemoryRequirements sharpen_requirements{};
+            get_image_memory_requirements_(
+                device_,
+                slot.sharpened_output,
+                &sharpen_requirements);
+
+            const std::uint32_t sharpen_memory_type =
+                find_memory_type(
+                    sharpen_requirements.memoryTypeBits,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+            if (sharpen_memory_type == UINT32_MAX) {
+                destroy();
+                return false;
+            }
+
+            const VkMemoryAllocateInfo sharpen_allocation_info{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .allocationSize = sharpen_requirements.size,
+                .memoryTypeIndex = sharpen_memory_type,
+            };
+
+            if (allocate_memory_(
+                    device_,
+                    &sharpen_allocation_info,
+                    nullptr,
+                    &slot.sharpened_output_memory) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            if (bind_image_memory_(
+                    device_,
+                    slot.sharpened_output,
+                    slot.sharpened_output_memory,
+                    0) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            const VkImageViewCreateInfo sharpen_output_view_info{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .image = slot.sharpened_output,
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = kOutputFormat,
+                .components = VkComponentMapping{
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                },
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            };
+
+            if (create_image_view_(
+                    device_,
+                    &sharpen_output_view_info,
+                    nullptr,
+                    &slot.sharpened_output_view) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+        }
+
         const VkDescriptorImageInfo source_descriptor{
             .sampler = sampler_,
             .imageView = slot.source_view,
@@ -680,6 +787,55 @@ bool VulkanPassthroughPipeline::initialize(
             writes.data(),
             0,
             nullptr);
+
+        if (sharpening_strength_ > 0.0F) {
+            const VkDescriptorImageInfo sharpen_source_descriptor{
+                .sampler = sampler_,
+                .imageView = slot.output_view,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
+
+            const VkDescriptorImageInfo sharpen_output_descriptor{
+                .sampler = VK_NULL_HANDLE,
+                .imageView = slot.sharpened_output_view,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            };
+
+            const std::array<VkWriteDescriptorSet, 2> sharpen_writes{
+                VkWriteDescriptorSet{
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .pNext = nullptr,
+                    .dstSet = slot.sharpen_descriptor_set,
+                    .dstBinding = 0,
+                    .dstArrayElement = 0,
+                    .descriptorCount = 1,
+                    .descriptorType =
+                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .pImageInfo = &sharpen_source_descriptor,
+                    .pBufferInfo = nullptr,
+                    .pTexelBufferView = nullptr,
+                },
+                VkWriteDescriptorSet{
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .pNext = nullptr,
+                    .dstSet = slot.sharpen_descriptor_set,
+                    .dstBinding = 1,
+                    .dstArrayElement = 0,
+                    .descriptorCount = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                    .pImageInfo = &sharpen_output_descriptor,
+                    .pBufferInfo = nullptr,
+                    .pTexelBufferView = nullptr,
+                },
+            };
+
+            update_descriptor_sets_(
+                device_,
+                static_cast<std::uint32_t>(sharpen_writes.size()),
+                sharpen_writes.data(),
+                0,
+                nullptr);
+        }
     }
 
     ready_ = true;
