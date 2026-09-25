@@ -34,8 +34,8 @@ This roadmap describes direction, not release promises.
 
 - [x] Frame history
 - [x] Motion estimation prototype
-- [ ] Bidirectional warping
-- [ ] Occlusion handling
+- [x] Bidirectional warping
+- [x] Occlusion handling
 - [ ] 2x interpolation
 - [ ] Frame pacing and latency metrics
 
