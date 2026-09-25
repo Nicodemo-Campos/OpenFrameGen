@@ -1884,6 +1884,18 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
 
     std::scoped_lock state_lock{state->mutex};
 
+    const auto present_time =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+
+    ofg::FrameCadence2xPlan cadence_plan{};
+    const bool cadence_plan_ready =
+        present_time > 0 &&
+        state->cadence_2x.observe_source_frame(
+            static_cast<std::uint64_t>(present_time),
+            cadence_plan);
+
     VkSemaphore copy_complete = VK_NULL_HANDLE;
     bool copy_submitted = false;
 
@@ -2294,6 +2306,34 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                     interpolation_extent.width,
                                     interpolation_extent.height);
                                 log_message(warp_message);
+                            }
+
+                            if (cadence_plan_ready &&
+                                state->passthrough->interpolated_frame_ready() &&
+                                !state->first_cadence_logged) {
+                                state->first_cadence_logged = true;
+
+                                constexpr double ns_per_ms = 1'000'000.0;
+                                char cadence_message[320]{};
+                                std::snprintf(
+                                    cadence_message,
+                                    sizeof(cadence_message),
+                                    "[OpenFrameGen] 2x cadence plan ready: "
+                                    "source-interval=%.3f ms, "
+                                    "previous->generated=%.3f ms, "
+                                    "generated->current=%.3f ms.",
+                                    static_cast<double>(
+                                        cadence_plan.source_interval_ns) /
+                                        ns_per_ms,
+                                    static_cast<double>(
+                                        cadence_plan
+                                            .previous_to_interpolated_ns) /
+                                        ns_per_ms,
+                                    static_cast<double>(
+                                        cadence_plan
+                                            .interpolated_to_current_ns) /
+                                        ns_per_ms);
+                                log_message(cadence_message);
                             }
                         }
                     } else {
