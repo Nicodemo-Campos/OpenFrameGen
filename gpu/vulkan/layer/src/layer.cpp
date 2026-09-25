@@ -2114,7 +2114,24 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroyDevice(
     }
 
     if (dispatch.device_wait_idle != nullptr) {
-        dispatch.device_wait_idle(device);
+        const auto idle_start =
+            std::chrono::steady_clock::now();
+        const VkResult idle_result =
+            dispatch.device_wait_idle(device);
+        const double idle_ms =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - idle_start)
+                .count();
+
+        char idle_message[256]{};
+        std::snprintf(
+            idle_message,
+            sizeof(idle_message),
+            "[OpenFrameGen] Device teardown vkDeviceWaitIdle: "
+            "result=%d, duration=%.3f ms.",
+            static_cast<int>(idle_result),
+            idle_ms);
+        log_message(idle_message);
     }
 
     for (const auto& state : swapchains) {
@@ -2417,14 +2434,26 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         if (state->generated_present_count > 0 &&
             state->copy_queue != VK_NULL_HANDLE &&
             dispatch.queue_wait_idle != nullptr) {
+            const auto drain_start =
+                std::chrono::steady_clock::now();
             const VkResult drain_result =
                 dispatch.queue_wait_idle(state->copy_queue);
+            const double drain_ms =
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - drain_start)
+                    .count();
 
             if (drain_result == VK_SUCCESS) {
                 state->synthetic_submission_pending = false;
-                log_message(
+
+                char drain_message[256]{};
+                std::snprintf(
+                    drain_message,
+                    sizeof(drain_message),
                     "[OpenFrameGen] 2x presentation queue drained "
-                    "before swapchain destruction.");
+                    "before swapchain destruction in %.3f ms.",
+                    drain_ms);
+                log_message(drain_message);
             } else {
                 log_message(
                     "[OpenFrameGen] 2x presentation queue drain failed "
@@ -2432,10 +2461,29 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
             }
         }
 
+        const auto retire_start =
+            std::chrono::steady_clock::now();
+
         retire_swapchain_copy_resources(
             dispatch,
             *state,
             retired_present_semaphores);
+
+        const double retire_ms =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - retire_start)
+                .count();
+
+        if (retire_ms >= 1.0) {
+            char retire_message[256]{};
+            std::snprintf(
+                retire_message,
+                sizeof(retire_message),
+                "[OpenFrameGen] Swapchain copy-resource retirement "
+                "took %.3f ms.",
+                retire_ms);
+            log_message(retire_message);
+        }
 
         generation = state->generation;
         extent = state->extent;
