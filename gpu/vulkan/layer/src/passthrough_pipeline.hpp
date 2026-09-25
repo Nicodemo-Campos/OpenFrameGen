@@ -58,6 +58,9 @@ public:
         GpuTimingSample& sample) const noexcept;
     [[nodiscard]] bool frame_history_ready() const noexcept;
     [[nodiscard]] std::uint64_t history_frame_count() const noexcept;
+    [[nodiscard]] bool motion_estimation_enabled() const noexcept;
+    [[nodiscard]] bool motion_field_ready() const noexcept;
+    [[nodiscard]] VkExtent2D motion_field_extent() const noexcept;
     void commit_frame_history() noexcept;
     [[nodiscard]] VkExtent2D output_extent() const noexcept;
     [[nodiscard]] bool record(
@@ -71,6 +74,14 @@ private:
         VkImage image = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkImageView view = VK_NULL_HANDLE;
+        bool initialized = false;
+    };
+
+    struct MotionField {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
         bool initialized = false;
     };
 
@@ -136,16 +147,21 @@ private:
 
     VkSampler sampler_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout motion_descriptor_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout motion_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkPipeline sharpen_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline motion_pipeline_ = VK_NULL_HANDLE;
     VkQueryPool timing_query_pool_ = VK_NULL_HANDLE;
     float timestamp_period_ns_ = 0.0F;
     std::uint32_t timestamp_valid_bits_ = 0;
 
     std::vector<Slot> slots_;
     std::array<HistoryImage, 2> history_{};
+    std::array<MotionField, 2> motion_fields_{};
+    VkExtent2D motion_extent_{};
     std::uint32_t history_write_index_ = 0;
     std::uint64_t history_frame_count_ = 0;
     bool ready_ = false;
