@@ -2822,6 +2822,9 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
 
                 if (wait_result == VK_SUCCESS) {
                     slot.has_submission = false;
+                    slot.used_for_present = false;
+                    slot.generated_used_for_present = false;
+                    slot.source_used_for_present = false;
                 }
 
                 if (wait_result == VK_SUCCESS &&
@@ -2863,7 +2866,6 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                         copy_complete = slot.copy_complete;
                         copy_submitted = true;
                         slot.has_submission = true;
-                        slot.used_for_present = true;
 
                         if (!state->first_copy_logged) {
                             state->first_copy_logged = true;
@@ -3005,6 +3007,26 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
 
     if (!copy_submitted) {
         return dispatch.queue_present(queue, present_info);
+    }
+
+    const std::uint32_t source_index =
+        present_info->pImageIndices[0];
+
+    VkResult interpolated_present_result = VK_SUCCESS;
+    if (try_present_2x_pair(
+            dispatch,
+            queue,
+            present_info,
+            *state,
+            source_index,
+            copy_complete,
+            cadence_plan_ready,
+            interpolated_present_result)) {
+        return interpolated_present_result;
+    }
+
+    if (source_index < state->copy_slots.size()) {
+        state->copy_slots[source_index].used_for_present = true;
     }
 
     VkPresentInfoKHR modified_present = *present_info;
