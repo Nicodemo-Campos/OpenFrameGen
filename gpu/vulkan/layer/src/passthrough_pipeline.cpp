@@ -2202,6 +2202,7 @@ bool VulkanPassthroughPipeline::record(
 
     auto& slot = slots_[slot_index];
     slot.motion_validation_written = false;
+    slot.warp_validation_written = false;
 
     const bool record_timing = timing_enabled();
     const std::uint32_t first_timing_query =
@@ -2831,36 +2832,172 @@ bool VulkanPassthroughPipeline::record(
                 warp_group_count_y,
                 1);
 
-            const VkImageMemoryBarrier warp_ready{
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .pNext = nullptr,
-                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = warp_output.image,
-                .subresourceRange = VkImageSubresourceRange{
-                    VK_IMAGE_ASPECT_COLOR_BIT,
-                    0,
-                    1,
-                    0,
-                    1,
-                },
-            };
+            if (motion_validation_enabled_ &&
+                slot.warp_validation_buffer != VK_NULL_HANDLE) {
+                const VkImageMemoryBarrier warp_to_transfer{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = warp_output.image,
+                    .subresourceRange = VkImageSubresourceRange{
+                        VK_IMAGE_ASPECT_COLOR_BIT,
+                        0,
+                        1,
+                        0,
+                        1,
+                    },
+                };
 
-            cmd_pipeline_barrier_(
-                command_buffer,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                0,
-                0,
-                nullptr,
-                0,
-                nullptr,
-                1,
-                &warp_ready);
+                cmd_pipeline_barrier_(
+                    command_buffer,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0,
+                    0,
+                    nullptr,
+                    0,
+                    nullptr,
+                    1,
+                    &warp_to_transfer);
+
+                const std::uint32_t midpoint_x =
+                    output_extent_.width / 2u;
+                const std::uint32_t midpoint_y =
+                    output_extent_.height / 2u;
+                const std::uint32_t occlusion_x =
+                    std::min(
+                        midpoint_x + 16u,
+                        output_extent_.width - 1u);
+
+                const std::array<VkBufferImageCopy, 2>
+                    validation_regions{
+                        VkBufferImageCopy{
+                            .bufferOffset = 0,
+                            .bufferRowLength = 0,
+                            .bufferImageHeight = 0,
+                            .imageSubresource = VkImageSubresourceLayers{
+                                VK_IMAGE_ASPECT_COLOR_BIT,
+                                0,
+                                0,
+                                1,
+                            },
+                            .imageOffset = VkOffset3D{
+                                static_cast<std::int32_t>(midpoint_x),
+                                static_cast<std::int32_t>(midpoint_y),
+                                0,
+                            },
+                            .imageExtent = VkExtent3D{1, 1, 1},
+                        },
+                        VkBufferImageCopy{
+                            .bufferOffset = sizeof(std::uint32_t),
+                            .bufferRowLength = 0,
+                            .bufferImageHeight = 0,
+                            .imageSubresource = VkImageSubresourceLayers{
+                                VK_IMAGE_ASPECT_COLOR_BIT,
+                                0,
+                                0,
+                                1,
+                            },
+                            .imageOffset = VkOffset3D{
+                                static_cast<std::int32_t>(occlusion_x),
+                                static_cast<std::int32_t>(midpoint_y),
+                                0,
+                            },
+                            .imageExtent = VkExtent3D{1, 1, 1},
+                        },
+                    };
+
+                cmd_copy_image_to_buffer_(
+                    command_buffer,
+                    warp_output.image,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    slot.warp_validation_buffer,
+                    static_cast<std::uint32_t>(
+                        validation_regions.size()),
+                    validation_regions.data());
+
+                const VkImageMemoryBarrier warp_ready{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = warp_output.image,
+                    .subresourceRange = VkImageSubresourceRange{
+                        VK_IMAGE_ASPECT_COLOR_BIT,
+                        0,
+                        1,
+                        0,
+                        1,
+                    },
+                };
+
+                const VkBufferMemoryBarrier validation_ready{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = slot.warp_validation_buffer,
+                    .offset = 0,
+                    .size = sizeof(WarpValidationSample),
+                };
+
+                cmd_pipeline_barrier_(
+                    command_buffer,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                        VK_PIPELINE_STAGE_HOST_BIT,
+                    0,
+                    0,
+                    nullptr,
+                    1,
+                    &validation_ready,
+                    1,
+                    &warp_ready);
+
+                slot.warp_validation_written = true;
+            } else {
+                const VkImageMemoryBarrier warp_ready{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = warp_output.image,
+                    .subresourceRange = VkImageSubresourceRange{
+                        VK_IMAGE_ASPECT_COLOR_BIT,
+                        0,
+                        1,
+                        0,
+                        1,
+                    },
+                };
+
+                cmd_pipeline_barrier_(
+                    command_buffer,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0,
+                    0,
+                    nullptr,
+                    0,
+                    nullptr,
+                    1,
+                    &warp_ready);
+            }
         }
     }
 
