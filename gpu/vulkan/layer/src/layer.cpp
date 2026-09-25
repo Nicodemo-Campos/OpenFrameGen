@@ -2312,10 +2312,10 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
     bool transfer_dst_enabled =
         (effective_create_info.imageUsage &
          VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
+    bool forced_fifo_for_2x = false;
+    bool requested_triple_buffer_for_2x = false;
 
-    if (interpolate_2x_requested &&
-        effective_create_info.presentMode == VK_PRESENT_MODE_FIFO_KHR &&
-        !transfer_dst_enabled) {
+    if (interpolate_2x_requested) {
         InstanceDispatch instance_dispatch{};
 
         if (find_instance_dispatch(
@@ -2329,12 +2329,39 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
                     .get_physical_device_surface_capabilities(
                         dispatch.physical_device,
                         create_info->surface,
-                        &capabilities) == VK_SUCCESS &&
-                (capabilities.supportedUsageFlags &
-                 VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0) {
-                effective_create_info.imageUsage |=
-                    VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-                transfer_dst_enabled = true;
+                        &capabilities) == VK_SUCCESS) {
+                if (!transfer_dst_enabled &&
+                    (capabilities.supportedUsageFlags &
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0) {
+                    effective_create_info.imageUsage |=
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                    transfer_dst_enabled = true;
+                }
+
+                // FIFO is guaranteed by Vulkan WSI and gives generated and
+                // source frames a deterministic presentation order.
+                if (effective_create_info.presentMode !=
+                    VK_PRESENT_MODE_FIFO_KHR) {
+                    effective_create_info.presentMode =
+                        VK_PRESENT_MODE_FIFO_KHR;
+                    forced_fifo_for_2x = true;
+                }
+
+                const std::uint32_t desired_min_images =
+                    std::max(
+                        effective_create_info.minImageCount,
+                        3u);
+                const bool triple_buffer_allowed =
+                    capabilities.maxImageCount == 0 ||
+                    desired_min_images <= capabilities.maxImageCount;
+
+                if (triple_buffer_allowed &&
+                    effective_create_info.minImageCount <
+                        desired_min_images) {
+                    effective_create_info.minImageCount =
+                        desired_min_images;
+                    requested_triple_buffer_for_2x = true;
+                }
             }
         }
     }
@@ -2370,13 +2397,14 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         g_swapchains[*swapchain] = state;
     }
 
-    char message[560]{};
+    char message[640]{};
     std::snprintf(
         message,
         sizeof(message),
         "[OpenFrameGen] Swapchain #%llu created: %ux%u, "
         "format=%s(%d), present=%s(%d), minImages=%u, usage=0x%08x, "
-        "2x-requested=%s, transfer-dst=%s.",
+        "2x-requested=%s, transfer-dst=%s, forced-fifo=%s, "
+        "requested-triple-buffer=%s.",
         static_cast<unsigned long long>(state->generation),
         effective_create_info.imageExtent.width,
         effective_create_info.imageExtent.height,
@@ -2387,7 +2415,9 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         effective_create_info.minImageCount,
         static_cast<unsigned int>(effective_create_info.imageUsage),
         state->interpolate_2x_requested ? "yes" : "no",
-        state->transfer_dst_enabled ? "yes" : "no");
+        state->transfer_dst_enabled ? "yes" : "no",
+        forced_fifo_for_2x ? "yes" : "no",
+        requested_triple_buffer_for_2x ? "yes" : "no");
     log_message(message);
 
     return VK_SUCCESS;
