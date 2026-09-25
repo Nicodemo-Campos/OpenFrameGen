@@ -43,6 +43,12 @@ if(OFG_GLSLC_EXECUTABLE)
     set(OFG_MOTION_HEADER
         "${OFG_GENERATED_SHADER_DIR}/motion_estimation_spv.hpp"
     )
+    set(OFG_WARP_SPV
+        "${OFG_GENERATED_SHADER_DIR}/bidirectional_warp.comp.spv"
+    )
+    set(OFG_WARP_HEADER
+        "${OFG_GENERATED_SHADER_DIR}/bidirectional_warp_spv.hpp"
+    )
 
     add_custom_command(
         OUTPUT "${OFG_PASSTHROUGH_SPV}"
@@ -122,12 +128,39 @@ if(OFG_GLSLC_EXECUTABLE)
         VERBATIM
     )
 
+    add_custom_command(
+        OUTPUT "${OFG_WARP_SPV}"
+        COMMAND
+            "${OFG_GLSLC_EXECUTABLE}"
+            -fshader-stage=compute
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bidirectional_warp.comp"
+            -o "${OFG_WARP_SPV}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bidirectional_warp.comp"
+        VERBATIM
+    )
+
+    add_custom_command(
+        OUTPUT "${OFG_WARP_HEADER}"
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DINPUT=${OFG_WARP_SPV}"
+            "-DOUTPUT=${OFG_WARP_HEADER}"
+            "-DSYMBOL=BidirectionalWarp"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+        DEPENDS
+            "${OFG_WARP_SPV}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+        VERBATIM
+    )
+
     target_sources(
         ofg_vulkan_layer
         PRIVATE
             "${OFG_PASSTHROUGH_HEADER}"
             "${OFG_SHARPEN_HEADER}"
             "${OFG_MOTION_HEADER}"
+            "${OFG_WARP_HEADER}"
     )
 
     target_include_directories(
