@@ -138,6 +138,10 @@ struct SwapchainState {
     std::uint32_t copy_queue_family = UINT32_MAX;
     bool synthetic_submission_pending = false;
 
+    std::uint64_t source_present_count = 0;
+    std::uint64_t generated_present_count = 0;
+    std::uint64_t generated_present_attempt_count = 0;
+
     bool interpolate_2x_requested = false;
     bool transfer_dst_enabled = false;
     bool copy_initialized = false;
@@ -1580,6 +1584,8 @@ void retire_swapchain_copy_resources(
         return false;
     }
 
+    ++state.generated_present_attempt_count;
+
     if (state.synthetic_submission_pending) {
         const VkResult wait_result =
             dispatch.wait_for_fences(
@@ -1730,6 +1736,8 @@ void retire_swapchain_copy_resources(
         dispatch.queue_present(
             queue,
             &source_present);
+
+    ++state.generated_present_count;
 
     if (!state.first_2x_present_logged) {
         state.first_2x_present_logged = true;
@@ -2373,6 +2381,9 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
     std::uint64_t generation = 0;
     VkExtent2D extent{};
     std::uint32_t image_count = 0;
+    std::uint64_t source_present_count = 0;
+    std::uint64_t generated_present_count = 0;
+    std::uint64_t generated_present_attempt_count = 0;
 
     if (state != nullptr) {
         std::scoped_lock state_lock{state->mutex};
@@ -2385,6 +2396,10 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         generation = state->generation;
         extent = state->extent;
         image_count = state->image_count;
+        source_present_count = state->source_present_count;
+        generated_present_count = state->generated_present_count;
+        generated_present_attempt_count =
+            state->generated_present_attempt_count;
 
         dispatch.destroy_swapchain(device, swapchain, allocator);
     } else {
@@ -2412,6 +2427,26 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
             extent.height,
             image_count);
         log_message(message);
+
+        if (source_present_count > 0) {
+            const double generated_ratio =
+                static_cast<double>(generated_present_count) /
+                static_cast<double>(source_present_count);
+
+            char stats_message[320]{};
+            std::snprintf(
+                stats_message,
+                sizeof(stats_message),
+                "[OpenFrameGen] 2x presentation stats: "
+                "source=%llu, generated=%llu, attempts=%llu, "
+                "generated/source=%.3f.",
+                static_cast<unsigned long long>(source_present_count),
+                static_cast<unsigned long long>(generated_present_count),
+                static_cast<unsigned long long>(
+                    generated_present_attempt_count),
+                generated_ratio);
+            log_message(stats_message);
+        }
     }
 }
 
@@ -2537,6 +2572,8 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
     }
 
     std::scoped_lock state_lock{state->mutex};
+
+    ++state->source_present_count;
 
     const auto present_time =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
