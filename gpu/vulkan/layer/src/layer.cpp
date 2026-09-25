@@ -5,11 +5,14 @@
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 
+#include <openframegen/core/frame_cadence.hpp>
+
 #include "passthrough_pipeline.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
@@ -134,8 +137,11 @@ struct SwapchainState {
     bool first_warp_logged = false;
     bool first_motion_validation_logged = false;
     bool first_warp_validation_logged = false;
+    bool first_cadence_logged = false;
     bool first_timing_logged = false;
     bool first_present_logged = false;
+
+    ofg::FrameCadence2xPlanner cadence_2x;
 };
 
 std::mutex g_state_mutex;
