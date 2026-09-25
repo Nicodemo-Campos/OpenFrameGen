@@ -1187,6 +1187,16 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     ready_ = false;
 
     if (device_ != VK_NULL_HANDLE &&
+        destroy_query_pool_ != nullptr &&
+        timing_query_pool_ != VK_NULL_HANDLE) {
+        destroy_query_pool_(
+            device_,
+            timing_query_pool_,
+            nullptr);
+    }
+    timing_query_pool_ = VK_NULL_HANDLE;
+
+    if (device_ != VK_NULL_HANDLE &&
         destroy_descriptor_pool_ != nullptr &&
         descriptor_pool_ != VK_NULL_HANDLE) {
         destroy_descriptor_pool_(
@@ -1307,6 +1317,8 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     source_format_ = VK_FORMAT_UNDEFINED;
     filter_ = ScaleFilter::Bilinear;
     sharpening_strength_ = 0.0F;
+    timestamp_period_ns_ = 0.0F;
+    timestamp_valid_bits_ = 0;
 }
 
 } // namespace ofg::vulkan
