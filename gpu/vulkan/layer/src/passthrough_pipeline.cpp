@@ -2071,6 +2071,50 @@ bool VulkanPassthroughPipeline::interpolated_frame_ready() const noexcept {
     return warp_outputs_[latest_index].initialized;
 }
 
+bool VulkanPassthroughPipeline::read_warp_validation(
+    std::uint32_t slot_index,
+    WarpValidationSample& sample) noexcept {
+    sample = {};
+
+    if (!motion_validation_enabled_ ||
+        slot_index >= slots_.size()) {
+        return false;
+    }
+
+    auto& slot = slots_[slot_index];
+    if (!slot.warp_validation_written ||
+        slot.warp_validation_memory == VK_NULL_HANDLE ||
+        map_memory_ == nullptr ||
+        unmap_memory_ == nullptr) {
+        return false;
+    }
+
+    void* mapped = nullptr;
+    const VkResult result =
+        map_memory_(
+            device_,
+            slot.warp_validation_memory,
+            0,
+            sizeof(WarpValidationSample),
+            0,
+            &mapped);
+
+    if (result != VK_SUCCESS || mapped == nullptr) {
+        return false;
+    }
+
+    std::memcpy(
+        &sample,
+        mapped,
+        sizeof(WarpValidationSample));
+    unmap_memory_(
+        device_,
+        slot.warp_validation_memory);
+
+    slot.warp_validation_written = false;
+    return true;
+}
+
 bool VulkanPassthroughPipeline::read_motion_validation(
     std::uint32_t slot_index,
     MotionValidationSample& sample) noexcept {
