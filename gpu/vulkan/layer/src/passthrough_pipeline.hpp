@@ -6,6 +6,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -55,6 +56,9 @@ public:
     [[nodiscard]] bool read_timing(
         std::uint32_t slot_index,
         GpuTimingSample& sample) const noexcept;
+    [[nodiscard]] bool frame_history_ready() const noexcept;
+    [[nodiscard]] std::uint64_t history_frame_count() const noexcept;
+    void commit_frame_history() noexcept;
     [[nodiscard]] VkExtent2D output_extent() const noexcept;
     [[nodiscard]] bool record(
         VkCommandBuffer command_buffer,
@@ -63,6 +67,13 @@ public:
     void destroy() noexcept;
 
 private:
+    struct HistoryImage {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        bool initialized = false;
+    };
+
     struct Slot {
         VkImage source = VK_NULL_HANDLE;
         VkImageView source_view = VK_NULL_HANDLE;
@@ -118,6 +129,7 @@ private:
     PFN_vkCmdResetQueryPool cmd_reset_query_pool_ = nullptr;
     PFN_vkCmdWriteTimestamp cmd_write_timestamp_ = nullptr;
     PFN_vkCmdPipelineBarrier cmd_pipeline_barrier_ = nullptr;
+    PFN_vkCmdCopyImage cmd_copy_image_ = nullptr;
     PFN_vkCmdBindPipeline cmd_bind_pipeline_ = nullptr;
     PFN_vkCmdBindDescriptorSets cmd_bind_descriptor_sets_ = nullptr;
     PFN_vkCmdDispatch cmd_dispatch_ = nullptr;
@@ -133,6 +145,9 @@ private:
     std::uint32_t timestamp_valid_bits_ = 0;
 
     std::vector<Slot> slots_;
+    std::array<HistoryImage, 2> history_{};
+    std::uint32_t history_write_index_ = 0;
+    std::uint64_t history_frame_count_ = 0;
     bool ready_ = false;
 };
 
