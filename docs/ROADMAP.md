@@ -26,7 +26,7 @@ This roadmap describes direction, not release promises.
 
 - [x] Compute backend abstraction
 - [x] Pass-through compute pipeline
-- [ ] Bilinear/bicubic scaler
+- [x] Bilinear/bicubic scaler
 - [ ] Sharpening pass
 - [ ] Timing and GPU-cost instrumentation
 

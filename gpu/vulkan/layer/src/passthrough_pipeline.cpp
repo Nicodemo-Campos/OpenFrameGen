@@ -149,8 +149,10 @@ bool VulkanPassthroughPipeline::initialize(
     VkDevice device,
     PFN_vkGetDeviceProcAddr get_device_proc_addr,
     const VkPhysicalDeviceMemoryProperties& memory_properties,
-    VkExtent2D extent,
+    VkExtent2D source_extent,
+    VkExtent2D output_extent,
     VkFormat source_format,
+    ScaleFilter filter,
     const std::vector<VkImage>& source_images) noexcept {
     destroy();
 
@@ -158,23 +160,29 @@ bool VulkanPassthroughPipeline::initialize(
     (void)device;
     (void)get_device_proc_addr;
     (void)memory_properties;
-    (void)extent;
+    (void)source_extent;
+    (void)output_extent;
     (void)source_format;
+    (void)filter;
     (void)source_images;
     return false;
 #else
     if (device == VK_NULL_HANDLE ||
         !supports_source_format(source_format) ||
-        extent.width == 0 ||
-        extent.height == 0 ||
+        source_extent.width == 0 ||
+        source_extent.height == 0 ||
+        output_extent.width == 0 ||
+        output_extent.height == 0 ||
         source_images.empty()) {
         return false;
     }
 
     device_ = device;
     memory_properties_ = memory_properties;
-    extent_ = extent;
+    source_extent_ = source_extent;
+    output_extent_ = output_extent;
     source_format_ = source_format;
+    filter_ = filter;
 
     if (!load_functions(get_device_proc_addr)) {
         destroy();
@@ -185,8 +193,14 @@ bool VulkanPassthroughPipeline::initialize(
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .magFilter = VK_FILTER_NEAREST,
-        .minFilter = VK_FILTER_NEAREST,
+        .magFilter =
+            filter_ == ScaleFilter::Bilinear
+                ? VK_FILTER_LINEAR
+                : VK_FILTER_NEAREST,
+        .minFilter =
+            filter_ == ScaleFilter::Bilinear
+                ? VK_FILTER_LINEAR
+                : VK_FILTER_NEAREST,
         .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
         .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
@@ -283,6 +297,22 @@ bool VulkanPassthroughPipeline::initialize(
         return false;
     }
 
+    const std::uint32_t filter_mode =
+        static_cast<std::uint32_t>(filter_);
+
+    const VkSpecializationMapEntry filter_entry{
+        .constantID = 0,
+        .offset = 0,
+        .size = sizeof(filter_mode),
+    };
+
+    const VkSpecializationInfo specialization_info{
+        .mapEntryCount = 1,
+        .pMapEntries = &filter_entry,
+        .dataSize = sizeof(filter_mode),
+        .pData = &filter_mode,
+    };
+
     const VkPipelineShaderStageCreateInfo stage_info{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .pNext = nullptr,
@@ -290,7 +320,7 @@ bool VulkanPassthroughPipeline::initialize(
         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
         .module = shader_module,
         .pName = "main",
-        .pSpecializationInfo = nullptr,
+        .pSpecializationInfo = &specialization_info,
     };
 
     const VkComputePipelineCreateInfo pipeline_info{
@@ -419,8 +449,8 @@ bool VulkanPassthroughPipeline::initialize(
             .imageType = VK_IMAGE_TYPE_2D,
             .format = kOutputFormat,
             .extent = VkExtent3D{
-                extent_.width,
-                extent_.height,
+                output_extent_.width,
+                output_extent_.height,
                 1,
             },
             .mipLevels = 1,
@@ -574,6 +604,10 @@ bool VulkanPassthroughPipeline::ready() const noexcept {
     return ready_;
 }
 
+VkExtent2D VulkanPassthroughPipeline::output_extent() const noexcept {
+    return output_extent_;
+}
+
 bool VulkanPassthroughPipeline::record(
     VkCommandBuffer command_buffer,
     std::uint32_t slot_index) const noexcept {
@@ -654,9 +688,9 @@ bool VulkanPassthroughPipeline::record(
         nullptr);
 
     const std::uint32_t group_count_x =
-        (extent_.width + 7u) / 8u;
+        (output_extent_.width + 7u) / 8u;
     const std::uint32_t group_count_y =
-        (extent_.height + 7u) / 8u;
+        (output_extent_.height + 7u) / 8u;
 
     cmd_dispatch_(
         command_buffer,
@@ -752,8 +786,10 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     slots_.clear();
     device_ = VK_NULL_HANDLE;
     memory_properties_ = {};
-    extent_ = {};
+    source_extent_ = {};
+    output_extent_ = {};
     source_format_ = VK_FORMAT_UNDEFINED;
+    filter_ = ScaleFilter::Bilinear;
 }
 
 } // namespace ofg::vulkan

@@ -11,6 +11,11 @@
 
 namespace ofg::vulkan {
 
+enum class ScaleFilter : std::uint32_t {
+    Bilinear = 0,
+    Bicubic = 1,
+};
+
 class VulkanPassthroughPipeline {
 public:
     VulkanPassthroughPipeline() = default;
@@ -28,11 +33,14 @@ public:
         VkDevice device,
         PFN_vkGetDeviceProcAddr get_device_proc_addr,
         const VkPhysicalDeviceMemoryProperties& memory_properties,
-        VkExtent2D extent,
+        VkExtent2D source_extent,
+        VkExtent2D output_extent,
         VkFormat source_format,
+        ScaleFilter filter,
         const std::vector<VkImage>& source_images) noexcept;
 
     [[nodiscard]] bool ready() const noexcept;
+    [[nodiscard]] VkExtent2D output_extent() const noexcept;
     [[nodiscard]] bool record(
         VkCommandBuffer command_buffer,
         std::uint32_t slot_index) const noexcept;
@@ -57,8 +65,10 @@ private:
 
     VkDevice device_ = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties memory_properties_{};
-    VkExtent2D extent_{};
+    VkExtent2D source_extent_{};
+    VkExtent2D output_extent_{};
     VkFormat source_format_ = VK_FORMAT_UNDEFINED;
+    ScaleFilter filter_ = ScaleFilter::Bilinear;
 
     PFN_vkCreateImage create_image_ = nullptr;
     PFN_vkDestroyImage destroy_image_ = nullptr;
