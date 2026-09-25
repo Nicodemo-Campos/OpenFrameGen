@@ -132,6 +132,7 @@ struct SwapchainState {
     bool first_motion_logged = false;
     bool first_warp_logged = false;
     bool first_motion_validation_logged = false;
+    bool first_warp_validation_logged = false;
     bool first_timing_logged = false;
     bool first_present_logged = false;
 };
@@ -2015,6 +2016,121 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             static_cast<double>(validation.motion_y),
                             static_cast<double>(validation.mean_error),
                             static_cast<double>(validation.valid));
+                        log_message(validation_message);
+                    }
+                }
+
+                if (wait_result == VK_SUCCESS &&
+                    slot.has_submission &&
+                    state->passthrough != nullptr &&
+                    state->passthrough->motion_validation_enabled() &&
+                    !state->first_warp_validation_logged) {
+                    ofg::vulkan::WarpValidationSample validation{};
+
+                    if (state->passthrough->read_warp_validation(
+                            image_index,
+                            validation)) {
+                        state->first_warp_validation_logged = true;
+
+                        const VkExtent2D extent =
+                            state->passthrough->output_extent();
+                        const std::uint32_t midpoint_x =
+                            extent.width / 2u;
+                        const std::uint32_t midpoint_y =
+                            extent.height / 2u;
+
+                        const auto to_unorm8 =
+                            [](float value) noexcept {
+                                const float clamped =
+                                    std::clamp(value, 0.0F, 1.0F);
+                                return static_cast<std::uint8_t>(
+                                    std::lround(clamped * 255.0F));
+                            };
+
+                        const float denominator_x =
+                            static_cast<float>(
+                                std::max(1u, extent.width - 1u));
+                        const float denominator_y =
+                            static_cast<float>(
+                                std::max(1u, extent.height - 1u));
+
+                        const std::array<std::uint8_t, 4>
+                            expected_midpoint{
+                                to_unorm8(
+                                    (static_cast<float>(midpoint_x) -
+                                     1.5F) /
+                                    denominator_x),
+                                to_unorm8(
+                                    (static_cast<float>(midpoint_y) +
+                                     1.0F) /
+                                    denominator_y),
+                                64u,
+                                255u,
+                            };
+                        const std::array<std::uint8_t, 4>
+                            expected_occlusion{
+                                0u,
+                                0u,
+                                255u,
+                                255u,
+                            };
+
+                        const auto rgba_matches =
+                            [](const auto& actual,
+                               const auto& expected) noexcept {
+                                constexpr int tolerance = 2;
+
+                                for (std::size_t channel = 0;
+                                     channel < actual.size();
+                                     ++channel) {
+                                    const int difference =
+                                        std::abs(
+                                            static_cast<int>(
+                                                actual[channel]) -
+                                            static_cast<int>(
+                                                expected[channel]));
+
+                                    if (difference > tolerance) {
+                                        return false;
+                                    }
+                                }
+
+                                return true;
+                            };
+
+                        const bool midpoint_passed =
+                            rgba_matches(
+                                validation.midpoint_rgba8,
+                                expected_midpoint);
+                        const bool occlusion_passed =
+                            rgba_matches(
+                                validation.occlusion_rgba8,
+                                expected_occlusion);
+                        const bool passed =
+                            midpoint_passed && occlusion_passed;
+
+                        char validation_message[420]{};
+                        std::snprintf(
+                            validation_message,
+                            sizeof(validation_message),
+                            "[OpenFrameGen] Warp/occlusion validation %s: "
+                            "midpoint=(%u,%u,%u,%u) "
+                            "expected=(%u,%u,%u,%u), "
+                            "occlusion=(%u,%u,%u,%u) "
+                            "expected=(0,0,255,255).",
+                            passed ? "PASS" : "FAIL",
+                            validation.midpoint_rgba8[0],
+                            validation.midpoint_rgba8[1],
+                            validation.midpoint_rgba8[2],
+                            validation.midpoint_rgba8[3],
+                            expected_midpoint[0],
+                            expected_midpoint[1],
+                            expected_midpoint[2],
+                            expected_midpoint[3],
+                            validation.occlusion_rgba8[0],
+                            validation.occlusion_rgba8[1],
+                            validation.occlusion_rgba8[2],
+                            validation.occlusion_rgba8[3]);
                         log_message(validation_message);
                     }
                 }
