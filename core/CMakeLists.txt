@@ -12,6 +12,10 @@ target_include_directories(ofg_core
 
 target_compile_features(ofg_core PUBLIC cxx_std_20)
 
+set_target_properties(ofg_core PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 target_compile_definitions(ofg_core
     PRIVATE
         OFG_VERSION_STRING="${PROJECT_VERSION}"
