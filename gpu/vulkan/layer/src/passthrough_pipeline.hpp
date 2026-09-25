@@ -80,6 +80,7 @@ public:
         MotionValidationSample& sample) noexcept;
     [[nodiscard]] bool bidirectional_warp_enabled() const noexcept;
     [[nodiscard]] bool interpolated_frame_ready() const noexcept;
+    [[nodiscard]] VkImage latest_interpolated_image() const noexcept;
     [[nodiscard]] bool read_warp_validation(
         std::uint32_t slot_index,
         WarpValidationSample& sample) noexcept;
