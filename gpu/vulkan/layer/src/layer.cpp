@@ -639,6 +639,12 @@ void retire_swapchain_copy_resources(
 
     state.copy_slots.resize(state.images.size());
 
+    VkImageUsageFlags owned_image_usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (enable_passthrough) {
+        owned_image_usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    }
+
     for (std::size_t index = 0;
          index < state.copy_slots.size();
          ++index) {
@@ -659,11 +665,7 @@ void retire_swapchain_copy_resources(
             .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage =
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                (enable_passthrough
-                    ? VK_IMAGE_USAGE_SAMPLED_BIT
-                    : 0),
+            .usage = owned_image_usage,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = nullptr,
