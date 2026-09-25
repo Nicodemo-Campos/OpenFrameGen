@@ -1,0 +1,35 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(constant_id = 0) const float sharpen_strength = 0.0;
+
+layout(set = 0, binding = 0) uniform sampler2D source_image;
+layout(set = 0, binding = 1, rgba8) writeonly uniform image2D output_image;
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 extent = imageSize(output_image);
+
+    if (pixel.x >= extent.x || pixel.y >= extent.y) {
+        return;
+    }
+
+    const ivec2 max_coordinate = extent - ivec2(1);
+    const ivec2 left = clamp(pixel + ivec2(-1, 0), ivec2(0), max_coordinate);
+    const ivec2 right = clamp(pixel + ivec2(1, 0), ivec2(0), max_coordinate);
+    const ivec2 up = clamp(pixel + ivec2(0, -1), ivec2(0), max_coordinate);
+    const ivec2 down = clamp(pixel + ivec2(0, 1), ivec2(0), max_coordinate);
+
+    const vec4 center = texelFetch(source_image, pixel, 0);
+    const vec4 neighbors =
+        texelFetch(source_image, left, 0) +
+        texelFetch(source_image, right, 0) +
+        texelFetch(source_image, up, 0) +
+        texelFetch(source_image, down, 0);
+
+    const vec4 blurred = (center * 4.0 + neighbors) / 8.0;
+    const vec4 sharpened = center + sharpen_strength * (center - blurred);
+
+    imageStore(output_image, pixel, clamp(sharpened, 0.0, 1.0));
+}
