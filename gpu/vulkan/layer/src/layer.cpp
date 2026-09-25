@@ -356,6 +356,15 @@ template <typename Dispatchable>
             std::strcmp(value, "on") == 0);
 }
 
+[[nodiscard]] bool configured_2x_interpolation() noexcept {
+    const char* value = std::getenv("OFG_INTERPOLATE_2X");
+
+    return value != nullptr &&
+           (std::strcmp(value, "1") == 0 ||
+            std::strcmp(value, "true") == 0 ||
+            std::strcmp(value, "on") == 0);
+}
+
 [[nodiscard]] ofg::vulkan::ScaleFilter configured_scale_filter() noexcept {
     const char* value = std::getenv("OFG_SCALE_FILTER");
 
@@ -391,6 +400,40 @@ template <typename Dispatchable>
                     static_cast<double>(scale) +
                 0.5)),
     };
+}
+
+[[nodiscard]] bool supports_2x_blit(
+    const DeviceDispatch& dispatch,
+    VkFormat destination_format) {
+    InstanceDispatch instance_dispatch{};
+
+    if (!find_instance_dispatch(
+            dispatch_key(dispatch.physical_device),
+            instance_dispatch) ||
+        instance_dispatch.get_physical_device_format_properties == nullptr) {
+        return false;
+    }
+
+    VkFormatProperties generated_properties{};
+    VkFormatProperties destination_properties{};
+
+    instance_dispatch.get_physical_device_format_properties(
+        dispatch.physical_device,
+        VK_FORMAT_R8G8B8A8_UNORM,
+        &generated_properties);
+    instance_dispatch.get_physical_device_format_properties(
+        dispatch.physical_device,
+        destination_format,
+        &destination_properties);
+
+    const bool generated_supported =
+        (generated_properties.optimalTilingFeatures &
+         VK_FORMAT_FEATURE_BLIT_SRC_BIT) != 0;
+    const bool destination_supported =
+        (destination_properties.optimalTilingFeatures &
+         VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0;
+
+    return generated_supported && destination_supported;
 }
 
 [[nodiscard]] bool supports_scaling(
