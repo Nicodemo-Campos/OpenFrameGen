@@ -10,6 +10,7 @@
 
 #if OFG_VULKAN_PASSTHROUGH_ENABLED
 #include "passthrough_spv.hpp"
+#include "sharpen_spv.hpp"
 #endif
 
 #include <array>
@@ -153,6 +154,7 @@ bool VulkanPassthroughPipeline::initialize(
     VkExtent2D output_extent,
     VkFormat source_format,
     ScaleFilter filter,
+    float sharpening_strength,
     const std::vector<VkImage>& source_images) noexcept {
     destroy();
 
@@ -164,6 +166,7 @@ bool VulkanPassthroughPipeline::initialize(
     (void)output_extent;
     (void)source_format;
     (void)filter;
+    (void)sharpening_strength;
     (void)source_images;
     return false;
 #else
@@ -183,6 +186,7 @@ bool VulkanPassthroughPipeline::initialize(
     output_extent_ = output_extent;
     source_format_ = source_format;
     filter_ = filter;
+    sharpening_strength_ = sharpening_strength;
 
     if (!load_functions(get_device_proc_addr)) {
         destroy();
@@ -349,17 +353,93 @@ bool VulkanPassthroughPipeline::initialize(
         return false;
     }
 
+    if (sharpening_strength_ > 0.0F) {
+        const VkShaderModuleCreateInfo sharpen_shader_info{
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .codeSize = generated::kSharpenSpirvSize,
+            .pCode = reinterpret_cast<const std::uint32_t*>(
+                generated::kSharpenSpirv),
+        };
+
+        VkShaderModule sharpen_shader_module = VK_NULL_HANDLE;
+        if (create_shader_module_(
+                device_,
+                &sharpen_shader_info,
+                nullptr,
+                &sharpen_shader_module) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        const VkSpecializationMapEntry strength_entry{
+            .constantID = 0,
+            .offset = 0,
+            .size = sizeof(sharpening_strength_),
+        };
+
+        const VkSpecializationInfo sharpen_specialization{
+            .mapEntryCount = 1,
+            .pMapEntries = &strength_entry,
+            .dataSize = sizeof(sharpening_strength_),
+            .pData = &sharpening_strength_,
+        };
+
+        const VkPipelineShaderStageCreateInfo sharpen_stage_info{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = sharpen_shader_module,
+            .pName = "main",
+            .pSpecializationInfo = &sharpen_specialization,
+        };
+
+        const VkComputePipelineCreateInfo sharpen_pipeline_info{
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .stage = sharpen_stage_info,
+            .layout = pipeline_layout_,
+            .basePipelineHandle = VK_NULL_HANDLE,
+            .basePipelineIndex = -1,
+        };
+
+        const VkResult sharpen_pipeline_result =
+            create_compute_pipelines_(
+                device_,
+                VK_NULL_HANDLE,
+                1,
+                &sharpen_pipeline_info,
+                nullptr,
+                &sharpen_pipeline_);
+
+        destroy_shader_module_(
+            device_,
+            sharpen_shader_module,
+            nullptr);
+
+        if (sharpen_pipeline_result != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+    }
+
     const std::uint32_t slot_count =
         static_cast<std::uint32_t>(source_images.size());
+
+    const std::uint32_t descriptor_multiplier =
+        sharpening_strength_ > 0.0F ? 2u : 1u;
 
     const std::array<VkDescriptorPoolSize, 2> pool_sizes{
         VkDescriptorPoolSize{
             .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = slot_count,
+            .descriptorCount = slot_count * descriptor_multiplier,
         },
         VkDescriptorPoolSize{
             .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .descriptorCount = slot_count,
+            .descriptorCount = slot_count * descriptor_multiplier,
         },
     };
 
@@ -367,7 +447,7 @@ bool VulkanPassthroughPipeline::initialize(
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .maxSets = slot_count,
+        .maxSets = slot_count * descriptor_multiplier,
         .poolSizeCount = static_cast<std::uint32_t>(pool_sizes.size()),
         .pPoolSizes = pool_sizes.data(),
     };
@@ -381,16 +461,18 @@ bool VulkanPassthroughPipeline::initialize(
         return false;
     }
 
+    const std::uint32_t descriptor_set_count =
+        slot_count * descriptor_multiplier;
     std::vector<VkDescriptorSetLayout> layouts(
-        slot_count,
+        descriptor_set_count,
         descriptor_set_layout_);
-    std::vector<VkDescriptorSet> descriptor_sets(slot_count);
+    std::vector<VkDescriptorSet> descriptor_sets(descriptor_set_count);
 
     const VkDescriptorSetAllocateInfo descriptor_allocate_info{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .pNext = nullptr,
         .descriptorPool = descriptor_pool_,
-        .descriptorSetCount = slot_count,
+        .descriptorSetCount = descriptor_set_count,
         .pSetLayouts = layouts.data(),
     };
 
@@ -410,6 +492,10 @@ bool VulkanPassthroughPipeline::initialize(
         auto& slot = slots_[index];
         slot.source = source_images[index];
         slot.descriptor_set = descriptor_sets[index];
+        if (sharpening_strength_ > 0.0F) {
+            slot.sharpen_descriptor_set =
+                descriptor_sets[slot_count + index];
+        }
 
         const VkImageViewCreateInfo source_view_info{
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -459,6 +545,7 @@ bool VulkanPassthroughPipeline::initialize(
             .tiling = VK_IMAGE_TILING_OPTIMAL,
             .usage =
                 VK_IMAGE_USAGE_STORAGE_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT |
                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
@@ -547,6 +634,113 @@ bool VulkanPassthroughPipeline::initialize(
             return false;
         }
 
+        if (sharpening_strength_ > 0.0F) {
+            const VkImageCreateInfo sharpen_output_info{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = kOutputFormat,
+                .extent = VkExtent3D{
+                    output_extent_.width,
+                    output_extent_.height,
+                    1,
+                },
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage =
+                    VK_IMAGE_USAGE_STORAGE_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+
+            if (create_image_(
+                    device_,
+                    &sharpen_output_info,
+                    nullptr,
+                    &slot.sharpened_output) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            VkMemoryRequirements sharpen_requirements{};
+            get_image_memory_requirements_(
+                device_,
+                slot.sharpened_output,
+                &sharpen_requirements);
+
+            const std::uint32_t sharpen_memory_type =
+                find_memory_type(
+                    sharpen_requirements.memoryTypeBits,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+            if (sharpen_memory_type == UINT32_MAX) {
+                destroy();
+                return false;
+            }
+
+            const VkMemoryAllocateInfo sharpen_allocation_info{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .allocationSize = sharpen_requirements.size,
+                .memoryTypeIndex = sharpen_memory_type,
+            };
+
+            if (allocate_memory_(
+                    device_,
+                    &sharpen_allocation_info,
+                    nullptr,
+                    &slot.sharpened_output_memory) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            if (bind_image_memory_(
+                    device_,
+                    slot.sharpened_output,
+                    slot.sharpened_output_memory,
+                    0) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            const VkImageViewCreateInfo sharpen_output_view_info{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .image = slot.sharpened_output,
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = kOutputFormat,
+                .components = VkComponentMapping{
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                },
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            };
+
+            if (create_image_view_(
+                    device_,
+                    &sharpen_output_view_info,
+                    nullptr,
+                    &slot.sharpened_output_view) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+        }
+
         const VkDescriptorImageInfo source_descriptor{
             .sampler = sampler_,
             .imageView = slot.source_view,
@@ -593,6 +787,55 @@ bool VulkanPassthroughPipeline::initialize(
             writes.data(),
             0,
             nullptr);
+
+        if (sharpening_strength_ > 0.0F) {
+            const VkDescriptorImageInfo sharpen_source_descriptor{
+                .sampler = sampler_,
+                .imageView = slot.output_view,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
+
+            const VkDescriptorImageInfo sharpen_output_descriptor{
+                .sampler = VK_NULL_HANDLE,
+                .imageView = slot.sharpened_output_view,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            };
+
+            const std::array<VkWriteDescriptorSet, 2> sharpen_writes{
+                VkWriteDescriptorSet{
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .pNext = nullptr,
+                    .dstSet = slot.sharpen_descriptor_set,
+                    .dstBinding = 0,
+                    .dstArrayElement = 0,
+                    .descriptorCount = 1,
+                    .descriptorType =
+                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .pImageInfo = &sharpen_source_descriptor,
+                    .pBufferInfo = nullptr,
+                    .pTexelBufferView = nullptr,
+                },
+                VkWriteDescriptorSet{
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .pNext = nullptr,
+                    .dstSet = slot.sharpen_descriptor_set,
+                    .dstBinding = 1,
+                    .dstArrayElement = 0,
+                    .descriptorCount = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                    .pImageInfo = &sharpen_output_descriptor,
+                    .pBufferInfo = nullptr,
+                    .pTexelBufferView = nullptr,
+                },
+            };
+
+            update_descriptor_sets_(
+                device_,
+                static_cast<std::uint32_t>(sharpen_writes.size()),
+                sharpen_writes.data(),
+                0,
+                nullptr);
+        }
     }
 
     ready_ = true;
@@ -602,6 +845,15 @@ bool VulkanPassthroughPipeline::initialize(
 
 bool VulkanPassthroughPipeline::ready() const noexcept {
     return ready_;
+}
+
+bool VulkanPassthroughPipeline::sharpening_enabled() const noexcept {
+    return sharpen_pipeline_ != VK_NULL_HANDLE &&
+           sharpening_strength_ > 0.0F;
+}
+
+float VulkanPassthroughPipeline::sharpening_strength() const noexcept {
+    return sharpening_strength_;
 }
 
 VkExtent2D VulkanPassthroughPipeline::output_extent() const noexcept {
@@ -698,6 +950,80 @@ bool VulkanPassthroughPipeline::record(
         group_count_y,
         1);
 
+    if (sharpening_enabled()) {
+        std::array<VkImageMemoryBarrier, 2> sharpen_barriers{
+            VkImageMemoryBarrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = slot.output,
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            },
+            VkImageMemoryBarrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = 0,
+                .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = slot.sharpened_output,
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            },
+        };
+
+        cmd_pipeline_barrier_(
+            command_buffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,
+            0,
+            nullptr,
+            0,
+            nullptr,
+            static_cast<std::uint32_t>(sharpen_barriers.size()),
+            sharpen_barriers.data());
+
+        cmd_bind_pipeline_(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            sharpen_pipeline_);
+
+        cmd_bind_descriptor_sets_(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipeline_layout_,
+            0,
+            1,
+            &slot.sharpen_descriptor_set,
+            0,
+            nullptr);
+
+        cmd_dispatch_(
+            command_buffer,
+            group_count_x,
+            group_count_y,
+            1);
+    }
+
     return true;
 }
 
@@ -713,6 +1039,13 @@ void VulkanPassthroughPipeline::destroy() noexcept {
             nullptr);
     }
     descriptor_pool_ = VK_NULL_HANDLE;
+
+    if (device_ != VK_NULL_HANDLE &&
+        destroy_pipeline_ != nullptr &&
+        sharpen_pipeline_ != VK_NULL_HANDLE) {
+        destroy_pipeline_(device_, sharpen_pipeline_, nullptr);
+    }
+    sharpen_pipeline_ = VK_NULL_HANDLE;
 
     if (device_ != VK_NULL_HANDLE &&
         destroy_pipeline_ != nullptr &&
@@ -749,6 +1082,33 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     sampler_ = VK_NULL_HANDLE;
 
     for (auto& slot : slots_) {
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_image_view_ != nullptr &&
+            slot.sharpened_output_view != VK_NULL_HANDLE) {
+            destroy_image_view_(
+                device_,
+                slot.sharpened_output_view,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_image_ != nullptr &&
+            slot.sharpened_output != VK_NULL_HANDLE) {
+            destroy_image_(
+                device_,
+                slot.sharpened_output,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            free_memory_ != nullptr &&
+            slot.sharpened_output_memory != VK_NULL_HANDLE) {
+            free_memory_(
+                device_,
+                slot.sharpened_output_memory,
+                nullptr);
+        }
+
         if (device_ != VK_NULL_HANDLE &&
             destroy_image_view_ != nullptr &&
             slot.output_view != VK_NULL_HANDLE) {
@@ -790,6 +1150,7 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     output_extent_ = {};
     source_format_ = VK_FORMAT_UNDEFINED;
     filter_ = ScaleFilter::Bilinear;
+    sharpening_strength_ = 0.0F;
 }
 
 } // namespace ofg::vulkan

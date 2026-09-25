@@ -37,9 +37,12 @@ public:
         VkExtent2D output_extent,
         VkFormat source_format,
         ScaleFilter filter,
+        float sharpening_strength,
         const std::vector<VkImage>& source_images) noexcept;
 
     [[nodiscard]] bool ready() const noexcept;
+    [[nodiscard]] bool sharpening_enabled() const noexcept;
+    [[nodiscard]] float sharpening_strength() const noexcept;
     [[nodiscard]] VkExtent2D output_extent() const noexcept;
     [[nodiscard]] bool record(
         VkCommandBuffer command_buffer,
@@ -55,6 +58,10 @@ private:
         VkDeviceMemory output_memory = VK_NULL_HANDLE;
         VkImageView output_view = VK_NULL_HANDLE;
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+        VkImage sharpened_output = VK_NULL_HANDLE;
+        VkDeviceMemory sharpened_output_memory = VK_NULL_HANDLE;
+        VkImageView sharpened_output_view = VK_NULL_HANDLE;
+        VkDescriptorSet sharpen_descriptor_set = VK_NULL_HANDLE;
     };
 
     [[nodiscard]] std::uint32_t find_memory_type(
@@ -69,6 +76,7 @@ private:
     VkExtent2D output_extent_{};
     VkFormat source_format_ = VK_FORMAT_UNDEFINED;
     ScaleFilter filter_ = ScaleFilter::Bilinear;
+    float sharpening_strength_ = 0.0F;
 
     PFN_vkCreateImage create_image_ = nullptr;
     PFN_vkDestroyImage destroy_image_ = nullptr;
@@ -102,6 +110,7 @@ private:
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkPipeline sharpen_pipeline_ = VK_NULL_HANDLE;
 
     std::vector<Slot> slots_;
     bool ready_ = false;

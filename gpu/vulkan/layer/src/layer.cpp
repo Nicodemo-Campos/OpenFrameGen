@@ -122,6 +122,7 @@ struct SwapchainState {
     bool first_copy_logged = false;
     bool first_copy_completed_logged = false;
     bool first_passthrough_logged = false;
+    bool first_sharpen_logged = false;
     bool first_present_logged = false;
 };
 
@@ -293,6 +294,26 @@ template <typename Dispatchable>
     return scale;
 }
 
+[[nodiscard]] float configured_sharpening_strength() noexcept {
+    const char* value = std::getenv("OFG_SHARPEN_STRENGTH");
+    if (value == nullptr || *value == '\0') {
+        return 0.0F;
+    }
+
+    char* end = nullptr;
+    const float strength = std::strtof(value, &end);
+
+    if (end == value ||
+        end == nullptr ||
+        *end != '\0' ||
+        strength < 0.0F ||
+        strength > 1.0F) {
+        return 0.0F;
+    }
+
+    return strength;
+}
+
 [[nodiscard]] ofg::vulkan::ScaleFilter configured_scale_filter() noexcept {
     const char* value = std::getenv("OFG_SCALE_FILTER");
 
@@ -368,9 +389,13 @@ template <typename Dispatchable>
         (source_properties.optimalTilingFeatures & required_source) ==
         required_source;
 
+    constexpr VkFormatFeatureFlags required_output =
+        VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+
     const bool output_supported =
-        (output_properties.optimalTilingFeatures &
-         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
+        (output_properties.optimalTilingFeatures & required_output) ==
+        required_output;
 
     return source_supported && output_supported;
 }
@@ -631,6 +656,8 @@ void retire_swapchain_copy_resources(
     state.copy_queue_family = queue_state.family_index;
 
     const float scale_factor = configured_scale_factor();
+    const float sharpening_strength =
+        configured_sharpening_strength();
     const auto scale_filter = configured_scale_filter();
     const VkExtent2D output_extent =
         scaled_extent(state.extent, scale_factor);
@@ -848,6 +875,7 @@ void retire_swapchain_copy_resources(
                 output_extent,
                 state.format,
                 scale_filter,
+                sharpening_strength,
                 source_images)) {
             state.passthrough = std::move(passthrough);
 
@@ -856,14 +884,15 @@ void retire_swapchain_copy_resources(
                 compute_message,
                 sizeof(compute_message),
                 "[OpenFrameGen] Vulkan %s scaler ready: "
-                "%ux%u -> %ux%u, scale=%.3f, images=%zu, "
-                "local size=8x8.",
+                "%ux%u -> %ux%u, scale=%.3f, sharpen=%.3f, "
+                "images=%zu, local size=8x8.",
                 scale_filter_name(scale_filter),
                 state.extent.width,
                 state.extent.height,
                 output_extent.width,
                 output_extent.height,
                 static_cast<double>(scale_factor),
+                static_cast<double>(sharpening_strength),
                 state.copy_slots.size());
             log_message(compute_message);
         } else {
@@ -1905,6 +1934,15 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             log_message(
                                 "[OpenFrameGen] First Vulkan scaler "
                                 "dispatch submitted.");
+                        }
+
+                        if (state->passthrough != nullptr &&
+                            state->passthrough->sharpening_enabled() &&
+                            !state->first_sharpen_logged) {
+                            state->first_sharpen_logged = true;
+                            log_message(
+                                "[OpenFrameGen] First Vulkan sharpening "
+                                "pass submitted.");
                         }
                     } else {
                         log_message(

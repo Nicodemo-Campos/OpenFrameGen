@@ -27,7 +27,7 @@ This roadmap describes direction, not release promises.
 - [x] Compute backend abstraction
 - [x] Pass-through compute pipeline
 - [x] Bilinear/bicubic scaler
-- [ ] Sharpening pass
+- [x] Sharpening pass
 - [ ] Timing and GPU-cost instrumentation
 
 ## Phase 3 — Frame interpolation
