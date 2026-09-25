@@ -3874,7 +3874,28 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
         present_info->pImageIndices[0];
 
     VkResult interpolated_present_result = VK_SUCCESS;
-    if (try_present_2x_pair(
+    const std::uint64_t acquire_wait_ns =
+        cadence_plan_ready
+            ? cadence_plan.previous_to_interpolated_ns
+            : 0u;
+
+    if (source_contains_generated &&
+        state->images.size() == 2 &&
+        try_present_2x_double_buffered(
+            dispatch,
+            queue,
+            present_info,
+            *state,
+            source_index,
+            copy_complete,
+            acquire_wait_ns,
+            interpolated_present_result)) {
+        return interpolated_present_result;
+    }
+
+    if (!source_contains_generated &&
+        state->images.size() >= 3 &&
+        try_present_2x_pair(
             dispatch,
             queue,
             present_info,
@@ -3882,15 +3903,18 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
             source_index,
             copy_complete,
             cadence_plan_ready,
-            cadence_plan_ready
-                ? cadence_plan.previous_to_interpolated_ns
-                : 0u,
+            acquire_wait_ns,
             interpolated_present_result)) {
         return interpolated_present_result;
     }
 
     if (source_index < state->copy_slots.size()) {
         state->copy_slots[source_index].used_for_present = true;
+
+        if (source_contains_generated) {
+            ++state->generated_present_count;
+            ++state->generated_source_drop_count;
+        }
     }
 
     VkPresentInfoKHR modified_present = *present_info;
