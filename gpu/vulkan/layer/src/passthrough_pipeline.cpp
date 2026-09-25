@@ -152,6 +152,7 @@ bool VulkanPassthroughPipeline::initialize(
     VkExtent2D source_extent,
     VkExtent2D output_extent,
     VkFormat source_format,
+    ScaleFilter filter,
     const std::vector<VkImage>& source_images) noexcept {
     destroy();
 
@@ -162,6 +163,7 @@ bool VulkanPassthroughPipeline::initialize(
     (void)source_extent;
     (void)output_extent;
     (void)source_format;
+    (void)filter;
     (void)source_images;
     return false;
 #else
@@ -180,6 +182,7 @@ bool VulkanPassthroughPipeline::initialize(
     source_extent_ = source_extent;
     output_extent_ = output_extent;
     source_format_ = source_format;
+    filter_ = filter;
 
     if (!load_functions(get_device_proc_addr)) {
         destroy();
@@ -288,6 +291,22 @@ bool VulkanPassthroughPipeline::initialize(
         return false;
     }
 
+    const std::uint32_t filter_mode =
+        static_cast<std::uint32_t>(filter_);
+
+    const VkSpecializationMapEntry filter_entry{
+        .constantID = 0,
+        .offset = 0,
+        .size = sizeof(filter_mode),
+    };
+
+    const VkSpecializationInfo specialization_info{
+        .mapEntryCount = 1,
+        .pMapEntries = &filter_entry,
+        .dataSize = sizeof(filter_mode),
+        .pData = &filter_mode,
+    };
+
     const VkPipelineShaderStageCreateInfo stage_info{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .pNext = nullptr,
@@ -295,7 +314,7 @@ bool VulkanPassthroughPipeline::initialize(
         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
         .module = shader_module,
         .pName = "main",
-        .pSpecializationInfo = nullptr,
+        .pSpecializationInfo = &specialization_info,
     };
 
     const VkComputePipelineCreateInfo pipeline_info{
@@ -764,6 +783,7 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     source_extent_ = {};
     output_extent_ = {};
     source_format_ = VK_FORMAT_UNDEFINED;
+    filter_ = ScaleFilter::Bilinear;
 }
 
 } // namespace ofg::vulkan
