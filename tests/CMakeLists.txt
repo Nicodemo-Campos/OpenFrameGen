@@ -12,6 +12,20 @@ add_test(
     COMMAND ofg_core_tests
 )
 
+add_executable(ofg_frame_cadence_tests
+    frame_cadence_tests.cpp
+)
+
+target_link_libraries(ofg_frame_cadence_tests
+    PRIVATE
+        OpenFrameGen::Core
+)
+
+add_test(
+    NAME ofg_frame_cadence
+    COMMAND ofg_frame_cadence_tests
+)
+
 add_executable(ofg_compute_tests
     compute_backend_tests.cpp
 )
