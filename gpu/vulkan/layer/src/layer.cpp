@@ -26,6 +26,8 @@ struct InstanceDispatch {
     PFN_vkDestroyInstance destroy_instance = nullptr;
     PFN_vkGetPhysicalDeviceMemoryProperties
         get_physical_device_memory_properties = nullptr;
+    PFN_vkGetPhysicalDeviceFormatProperties
+        get_physical_device_format_properties = nullptr;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties
         get_physical_device_queue_family_properties = nullptr;
 };
@@ -269,6 +271,85 @@ template <typename Dispatchable>
 
     out_dispatch = it->second;
     return true;
+}
+
+[[nodiscard]] float configured_scale_factor() noexcept {
+    const char* value = std::getenv("OFG_SCALE_FACTOR");
+    if (value == nullptr || *value == '\0') {
+        return 1.0F;
+    }
+
+    char* end = nullptr;
+    const float scale = std::strtof(value, &end);
+
+    if (end == value ||
+        end == nullptr ||
+        *end != '\0' ||
+        scale < 0.25F ||
+        scale > 2.0F) {
+        return 1.0F;
+    }
+
+    return scale;
+}
+
+[[nodiscard]] VkExtent2D scaled_extent(
+    VkExtent2D source,
+    float scale) noexcept {
+    return VkExtent2D{
+        std::max(
+            1u,
+            static_cast<std::uint32_t>(
+                static_cast<double>(source.width) *
+                    static_cast<double>(scale) +
+                0.5)),
+        std::max(
+            1u,
+            static_cast<std::uint32_t>(
+                static_cast<double>(source.height) *
+                    static_cast<double>(scale) +
+                0.5)),
+    };
+}
+
+[[nodiscard]] bool supports_bilinear_scaling(
+    const DeviceDispatch& dispatch,
+    VkFormat source_format) {
+    InstanceDispatch instance_dispatch{};
+
+    if (!find_instance_dispatch(
+            dispatch_key(dispatch.physical_device),
+            instance_dispatch) ||
+        instance_dispatch.get_physical_device_format_properties == nullptr) {
+        return false;
+    }
+
+    VkFormatProperties source_properties{};
+    VkFormatProperties output_properties{};
+
+    instance_dispatch.get_physical_device_format_properties(
+        dispatch.physical_device,
+        source_format,
+        &source_properties);
+
+    instance_dispatch.get_physical_device_format_properties(
+        dispatch.physical_device,
+        VK_FORMAT_R8G8B8A8_UNORM,
+        &output_properties);
+
+    constexpr VkFormatFeatureFlags required_source =
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+
+    const bool source_supported =
+        (source_properties.optimalTilingFeatures & required_source) ==
+        required_source;
+
+    const bool output_supported =
+        (output_properties.optimalTilingFeatures &
+         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
+
+    return source_supported && output_supported;
 }
 
 [[nodiscard]] std::uint32_t find_memory_type(
@@ -526,11 +607,16 @@ void retire_swapchain_copy_resources(
     state.copy_queue = queue;
     state.copy_queue_family = queue_state.family_index;
 
+    const float scale_factor = configured_scale_factor();
+    const VkExtent2D output_extent =
+        scaled_extent(state.extent, scale_factor);
+
     const bool enable_passthrough =
         ofg::vulkan::VulkanPassthroughPipeline::build_available() &&
         (queue_state.capabilities & VK_QUEUE_COMPUTE_BIT) != 0 &&
         ofg::vulkan::VulkanPassthroughPipeline::supports_source_format(
-            state.format);
+            state.format) &&
+        supports_bilinear_scaling(dispatch, state.format);
 
     const VkCommandPoolCreateInfo pool_info{
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -730,21 +816,28 @@ void retire_swapchain_copy_resources(
                 dispatch.get_device_proc_addr,
                 dispatch.memory_properties,
                 state.extent,
+                output_extent,
                 state.format,
                 source_images)) {
             state.passthrough = std::move(passthrough);
 
-            char compute_message[256]{};
+            char compute_message[320]{};
             std::snprintf(
                 compute_message,
                 sizeof(compute_message),
-                "[OpenFrameGen] Vulkan compute pass-through ready: "
-                "%zu output images, local size=8x8.",
+                "[OpenFrameGen] Vulkan bilinear scaler ready: "
+                "%ux%u -> %ux%u, scale=%.3f, images=%zu, "
+                "local size=8x8.",
+                state.extent.width,
+                state.extent.height,
+                output_extent.width,
+                output_extent.height,
+                static_cast<double>(scale_factor),
                 state.copy_slots.size());
             log_message(compute_message);
         } else {
             log_message(
-                "[OpenFrameGen] Vulkan compute pass-through initialization "
+                "[OpenFrameGen] Vulkan bilinear scaler initialization "
                 "failed; frame copy remains active.");
         }
     }
@@ -1031,6 +1124,11 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
                 next_gipa(
                     *instance,
                     "vkGetPhysicalDeviceMemoryProperties")),
+        .get_physical_device_format_properties =
+            reinterpret_cast<PFN_vkGetPhysicalDeviceFormatProperties>(
+                next_gipa(
+                    *instance,
+                    "vkGetPhysicalDeviceFormatProperties")),
         .get_physical_device_queue_family_properties =
             reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
                 next_gipa(
@@ -1774,8 +1872,8 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             !state->first_passthrough_logged) {
                             state->first_passthrough_logged = true;
                             log_message(
-                                "[OpenFrameGen] First Vulkan compute "
-                                "pass-through submitted.");
+                                "[OpenFrameGen] First Vulkan bilinear "
+                                "scaler dispatch submitted.");
                         }
                     } else {
                         log_message(
