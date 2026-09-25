@@ -1463,6 +1463,7 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue(
 
     if (queue != nullptr && *queue != VK_NULL_HANDLE) {
         VkQueueFlags capabilities = 0;
+        std::uint32_t timestamp_valid_bits = 0;
 
         InstanceDispatch instance_dispatch{};
         if (find_instance_dispatch(
@@ -1488,6 +1489,8 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue(
                 if (queue_family_index < family_count) {
                     capabilities =
                         properties[queue_family_index].queueFlags;
+                    timestamp_valid_bits =
+                        properties[queue_family_index].timestampValidBits;
                 }
             }
         }
@@ -1499,6 +1502,7 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue(
             .queue_index = queue_index,
             .flags = 0,
             .capabilities = capabilities,
+            .timestamp_valid_bits = timestamp_valid_bits,
         };
     }
 }
@@ -1521,6 +1525,7 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue2(
 
     if (queue != nullptr && *queue != VK_NULL_HANDLE) {
         VkQueueFlags capabilities = 0;
+        std::uint32_t timestamp_valid_bits = 0;
 
         InstanceDispatch instance_dispatch{};
         if (find_instance_dispatch(
@@ -1546,6 +1551,9 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue2(
                 if (queue_info->queueFamilyIndex < family_count) {
                     capabilities =
                         properties[queue_info->queueFamilyIndex].queueFlags;
+                    timestamp_valid_bits =
+                        properties[queue_info->queueFamilyIndex]
+                            .timestampValidBits;
                 }
             }
         }
@@ -1557,6 +1565,7 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue2(
             .queue_index = queue_info->queueIndex,
             .flags = queue_info->flags,
             .capabilities = capabilities,
+            .timestamp_valid_bits = timestamp_valid_bits,
         };
     }
 }
