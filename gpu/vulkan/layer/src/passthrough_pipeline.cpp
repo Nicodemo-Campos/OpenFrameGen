@@ -353,17 +353,93 @@ bool VulkanPassthroughPipeline::initialize(
         return false;
     }
 
+    if (sharpening_strength_ > 0.0F) {
+        const VkShaderModuleCreateInfo sharpen_shader_info{
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .codeSize = generated::kSharpenSpirvSize,
+            .pCode = reinterpret_cast<const std::uint32_t*>(
+                generated::kSharpenSpirv),
+        };
+
+        VkShaderModule sharpen_shader_module = VK_NULL_HANDLE;
+        if (create_shader_module_(
+                device_,
+                &sharpen_shader_info,
+                nullptr,
+                &sharpen_shader_module) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        const VkSpecializationMapEntry strength_entry{
+            .constantID = 0,
+            .offset = 0,
+            .size = sizeof(sharpening_strength_),
+        };
+
+        const VkSpecializationInfo sharpen_specialization{
+            .mapEntryCount = 1,
+            .pMapEntries = &strength_entry,
+            .dataSize = sizeof(sharpening_strength_),
+            .pData = &sharpening_strength_,
+        };
+
+        const VkPipelineShaderStageCreateInfo sharpen_stage_info{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = sharpen_shader_module,
+            .pName = "main",
+            .pSpecializationInfo = &sharpen_specialization,
+        };
+
+        const VkComputePipelineCreateInfo sharpen_pipeline_info{
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .stage = sharpen_stage_info,
+            .layout = pipeline_layout_,
+            .basePipelineHandle = VK_NULL_HANDLE,
+            .basePipelineIndex = -1,
+        };
+
+        const VkResult sharpen_pipeline_result =
+            create_compute_pipelines_(
+                device_,
+                VK_NULL_HANDLE,
+                1,
+                &sharpen_pipeline_info,
+                nullptr,
+                &sharpen_pipeline_);
+
+        destroy_shader_module_(
+            device_,
+            sharpen_shader_module,
+            nullptr);
+
+        if (sharpen_pipeline_result != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+    }
+
     const std::uint32_t slot_count =
         static_cast<std::uint32_t>(source_images.size());
+
+    const std::uint32_t descriptor_multiplier =
+        sharpening_strength_ > 0.0F ? 2u : 1u;
 
     const std::array<VkDescriptorPoolSize, 2> pool_sizes{
         VkDescriptorPoolSize{
             .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = slot_count,
+            .descriptorCount = slot_count * descriptor_multiplier,
         },
         VkDescriptorPoolSize{
             .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .descriptorCount = slot_count,
+            .descriptorCount = slot_count * descriptor_multiplier,
         },
     };
 
@@ -371,7 +447,7 @@ bool VulkanPassthroughPipeline::initialize(
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .maxSets = slot_count,
+        .maxSets = slot_count * descriptor_multiplier,
         .poolSizeCount = static_cast<std::uint32_t>(pool_sizes.size()),
         .pPoolSizes = pool_sizes.data(),
     };
@@ -385,16 +461,18 @@ bool VulkanPassthroughPipeline::initialize(
         return false;
     }
 
+    const std::uint32_t descriptor_set_count =
+        slot_count * descriptor_multiplier;
     std::vector<VkDescriptorSetLayout> layouts(
-        slot_count,
+        descriptor_set_count,
         descriptor_set_layout_);
-    std::vector<VkDescriptorSet> descriptor_sets(slot_count);
+    std::vector<VkDescriptorSet> descriptor_sets(descriptor_set_count);
 
     const VkDescriptorSetAllocateInfo descriptor_allocate_info{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .pNext = nullptr,
         .descriptorPool = descriptor_pool_,
-        .descriptorSetCount = slot_count,
+        .descriptorSetCount = descriptor_set_count,
         .pSetLayouts = layouts.data(),
     };
 
@@ -414,6 +492,10 @@ bool VulkanPassthroughPipeline::initialize(
         auto& slot = slots_[index];
         slot.source = source_images[index];
         slot.descriptor_set = descriptor_sets[index];
+        if (sharpening_strength_ > 0.0F) {
+            slot.sharpen_descriptor_set =
+                descriptor_sets[slot_count + index];
+        }
 
         const VkImageViewCreateInfo source_view_info{
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -463,6 +545,7 @@ bool VulkanPassthroughPipeline::initialize(
             .tiling = VK_IMAGE_TILING_OPTIMAL,
             .usage =
                 VK_IMAGE_USAGE_STORAGE_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT |
                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
