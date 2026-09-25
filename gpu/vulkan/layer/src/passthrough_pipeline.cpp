@@ -1516,6 +1516,38 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     }
     sampler_ = VK_NULL_HANDLE;
 
+    for (auto& history_image : history_) {
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_image_view_ != nullptr &&
+            history_image.view != VK_NULL_HANDLE) {
+            destroy_image_view_(
+                device_,
+                history_image.view,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_image_ != nullptr &&
+            history_image.image != VK_NULL_HANDLE) {
+            destroy_image_(
+                device_,
+                history_image.image,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            free_memory_ != nullptr &&
+            history_image.memory != VK_NULL_HANDLE) {
+            free_memory_(
+                device_,
+                history_image.memory,
+                nullptr);
+        }
+    }
+    history_ = {};
+    history_write_index_ = 0;
+    history_frame_count_ = 0;
+
     for (auto& slot : slots_) {
         if (device_ != VK_NULL_HANDLE &&
             destroy_image_view_ != nullptr &&
