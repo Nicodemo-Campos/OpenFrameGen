@@ -22,6 +22,7 @@ namespace ofg::vulkan {
 namespace {
 
 constexpr VkFormat kOutputFormat = VK_FORMAT_R8G8B8A8_UNORM;
+constexpr std::uint32_t kTimingQueriesPerSlot = 3;
 
 template <typename Function>
 [[nodiscard]] Function load_device_function(
@@ -84,6 +85,11 @@ bool VulkanPassthroughPipeline::load_functions(
     OFG_LOAD(vkDestroyShaderModule, destroy_shader_module_);
     OFG_LOAD(vkCreateComputePipelines, create_compute_pipelines_);
     OFG_LOAD(vkDestroyPipeline, destroy_pipeline_);
+    OFG_LOAD(vkCreateQueryPool, create_query_pool_);
+    OFG_LOAD(vkDestroyQueryPool, destroy_query_pool_);
+    OFG_LOAD(vkGetQueryPoolResults, get_query_pool_results_);
+    OFG_LOAD(vkCmdResetQueryPool, cmd_reset_query_pool_);
+    OFG_LOAD(vkCmdWriteTimestamp, cmd_write_timestamp_);
     OFG_LOAD(vkCmdPipelineBarrier, cmd_pipeline_barrier_);
     OFG_LOAD(vkCmdBindPipeline, cmd_bind_pipeline_);
     OFG_LOAD(vkCmdBindDescriptorSets, cmd_bind_descriptor_sets_);
@@ -155,6 +161,8 @@ bool VulkanPassthroughPipeline::initialize(
     VkFormat source_format,
     ScaleFilter filter,
     float sharpening_strength,
+    float timestamp_period_ns,
+    std::uint32_t timestamp_valid_bits,
     const std::vector<VkImage>& source_images) noexcept {
     destroy();
 
@@ -167,6 +175,8 @@ bool VulkanPassthroughPipeline::initialize(
     (void)source_format;
     (void)filter;
     (void)sharpening_strength;
+    (void)timestamp_period_ns;
+    (void)timestamp_valid_bits;
     (void)source_images;
     return false;
 #else
@@ -187,6 +197,8 @@ bool VulkanPassthroughPipeline::initialize(
     source_format_ = source_format;
     filter_ = filter;
     sharpening_strength_ = sharpening_strength;
+    timestamp_period_ns_ = timestamp_period_ns;
+    timestamp_valid_bits_ = timestamp_valid_bits;
 
     if (!load_functions(get_device_proc_addr)) {
         destroy();
@@ -428,6 +440,34 @@ bool VulkanPassthroughPipeline::initialize(
 
     const std::uint32_t slot_count =
         static_cast<std::uint32_t>(source_images.size());
+
+    const bool timing_functions_available =
+        create_query_pool_ != nullptr &&
+        destroy_query_pool_ != nullptr &&
+        get_query_pool_results_ != nullptr &&
+        cmd_reset_query_pool_ != nullptr &&
+        cmd_write_timestamp_ != nullptr;
+
+    if (timing_functions_available &&
+        timestamp_period_ns_ > 0.0F &&
+        timestamp_valid_bits_ > 0) {
+        const VkQueryPoolCreateInfo query_pool_info{
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .queryType = VK_QUERY_TYPE_TIMESTAMP,
+            .queryCount = slot_count * kTimingQueriesPerSlot,
+            .pipelineStatistics = 0,
+        };
+
+        if (create_query_pool_(
+                device_,
+                &query_pool_info,
+                nullptr,
+                &timing_query_pool_) != VK_SUCCESS) {
+            timing_query_pool_ = VK_NULL_HANDLE;
+        }
+    }
 
     const std::uint32_t descriptor_multiplier =
         sharpening_strength_ > 0.0F ? 2u : 1u;
@@ -856,6 +896,86 @@ float VulkanPassthroughPipeline::sharpening_strength() const noexcept {
     return sharpening_strength_;
 }
 
+bool VulkanPassthroughPipeline::timing_enabled() const noexcept {
+    return timing_query_pool_ != VK_NULL_HANDLE &&
+           get_query_pool_results_ != nullptr &&
+           cmd_reset_query_pool_ != nullptr &&
+           cmd_write_timestamp_ != nullptr &&
+           timestamp_period_ns_ > 0.0F &&
+           timestamp_valid_bits_ > 0;
+}
+
+bool VulkanPassthroughPipeline::read_timing(
+    std::uint32_t slot_index,
+    GpuTimingSample& sample) const noexcept {
+    sample = {};
+
+    if (!timing_enabled() ||
+        slot_index >= slots_.size()) {
+        return false;
+    }
+
+    std::array<std::uint64_t, kTimingQueriesPerSlot> timestamps{};
+    const std::uint32_t first_query =
+        slot_index * kTimingQueriesPerSlot;
+
+    const VkResult result =
+        get_query_pool_results_(
+            device_,
+            timing_query_pool_,
+            first_query,
+            kTimingQueriesPerSlot,
+            sizeof(timestamps),
+            timestamps.data(),
+            sizeof(std::uint64_t),
+            VK_QUERY_RESULT_64_BIT);
+
+    if (result != VK_SUCCESS) {
+        return false;
+    }
+
+    const auto tick_delta =
+        [this](std::uint64_t begin, std::uint64_t end) noexcept {
+            if (timestamp_valid_bits_ >= 64) {
+                return end - begin;
+            }
+
+            const std::uint64_t mask =
+                (std::uint64_t{1} << timestamp_valid_bits_) - 1;
+            return (end - begin) & mask;
+        };
+
+    const std::uint64_t scaler_ticks =
+        tick_delta(timestamps[0], timestamps[1]);
+    const std::uint64_t sharpen_ticks =
+        sharpening_enabled()
+            ? tick_delta(timestamps[1], timestamps[2])
+            : 0;
+    const std::uint64_t total_ticks =
+        sharpening_enabled()
+            ? tick_delta(timestamps[0], timestamps[2])
+            : scaler_ticks;
+
+    constexpr double nanoseconds_per_millisecond = 1'000'000.0;
+    const double period =
+        static_cast<double>(timestamp_period_ns_);
+
+    sample.scaler_ms =
+        static_cast<double>(scaler_ticks) *
+        period /
+        nanoseconds_per_millisecond;
+    sample.sharpening_ms =
+        static_cast<double>(sharpen_ticks) *
+        period /
+        nanoseconds_per_millisecond;
+    sample.total_ms =
+        static_cast<double>(total_ticks) *
+        period /
+        nanoseconds_per_millisecond;
+
+    return true;
+}
+
 VkExtent2D VulkanPassthroughPipeline::output_extent() const noexcept {
     return output_extent_;
 }
@@ -870,6 +990,18 @@ bool VulkanPassthroughPipeline::record(
     }
 
     const auto& slot = slots_[slot_index];
+
+    const bool record_timing = timing_enabled();
+    const std::uint32_t first_timing_query =
+        slot_index * kTimingQueriesPerSlot;
+
+    if (record_timing) {
+        cmd_reset_query_pool_(
+            command_buffer,
+            timing_query_pool_,
+            first_timing_query,
+            kTimingQueriesPerSlot);
+    }
 
     std::array<VkImageMemoryBarrier, 2> barriers{
         VkImageMemoryBarrier{
@@ -924,6 +1056,14 @@ bool VulkanPassthroughPipeline::record(
         static_cast<std::uint32_t>(barriers.size()),
         barriers.data());
 
+    if (record_timing) {
+        cmd_write_timestamp_(
+            command_buffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            timing_query_pool_,
+            first_timing_query);
+    }
+
     cmd_bind_pipeline_(
         command_buffer,
         VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -949,6 +1089,14 @@ bool VulkanPassthroughPipeline::record(
         group_count_x,
         group_count_y,
         1);
+
+    if (record_timing) {
+        cmd_write_timestamp_(
+            command_buffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            timing_query_pool_,
+            first_timing_query + 1);
+    }
 
     if (sharpening_enabled()) {
         std::array<VkImageMemoryBarrier, 2> sharpen_barriers{
@@ -1024,11 +1172,29 @@ bool VulkanPassthroughPipeline::record(
             1);
     }
 
+    if (record_timing) {
+        cmd_write_timestamp_(
+            command_buffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            timing_query_pool_,
+            first_timing_query + 2);
+    }
+
     return true;
 }
 
 void VulkanPassthroughPipeline::destroy() noexcept {
     ready_ = false;
+
+    if (device_ != VK_NULL_HANDLE &&
+        destroy_query_pool_ != nullptr &&
+        timing_query_pool_ != VK_NULL_HANDLE) {
+        destroy_query_pool_(
+            device_,
+            timing_query_pool_,
+            nullptr);
+    }
+    timing_query_pool_ = VK_NULL_HANDLE;
 
     if (device_ != VK_NULL_HANDLE &&
         destroy_descriptor_pool_ != nullptr &&
@@ -1151,6 +1317,8 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     source_format_ = VK_FORMAT_UNDEFINED;
     filter_ = ScaleFilter::Bilinear;
     sharpening_strength_ = 0.0F;
+    timestamp_period_ns_ = 0.0F;
+    timestamp_valid_bits_ = 0;
 }
 
 } // namespace ofg::vulkan

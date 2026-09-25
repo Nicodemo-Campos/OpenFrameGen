@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -26,6 +27,8 @@ struct InstanceDispatch {
     PFN_vkDestroyInstance destroy_instance = nullptr;
     PFN_vkGetPhysicalDeviceMemoryProperties
         get_physical_device_memory_properties = nullptr;
+    PFN_vkGetPhysicalDeviceProperties
+        get_physical_device_properties = nullptr;
     PFN_vkGetPhysicalDeviceFormatProperties
         get_physical_device_format_properties = nullptr;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties
@@ -36,6 +39,7 @@ struct DeviceDispatch {
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties memory_properties{};
+    float timestamp_period_ns = 0.0F;
 
     PFN_vkGetDeviceProcAddr get_device_proc_addr = nullptr;
     PFN_vkDestroyDevice destroy_device = nullptr;
@@ -84,6 +88,7 @@ struct QueueState {
     std::uint32_t queue_index = 0;
     VkDeviceQueueCreateFlags flags = 0;
     VkQueueFlags capabilities = 0;
+    std::uint32_t timestamp_valid_bits = 0;
 };
 
 struct CopySlot {
@@ -123,6 +128,7 @@ struct SwapchainState {
     bool first_copy_completed_logged = false;
     bool first_passthrough_logged = false;
     bool first_sharpen_logged = false;
+    bool first_timing_logged = false;
     bool first_present_logged = false;
 };
 
@@ -286,6 +292,7 @@ template <typename Dispatchable>
     if (end == value ||
         end == nullptr ||
         *end != '\0' ||
+        !std::isfinite(scale) ||
         scale < 0.25F ||
         scale > 2.0F) {
         return 1.0F;
@@ -306,6 +313,7 @@ template <typename Dispatchable>
     if (end == value ||
         end == nullptr ||
         *end != '\0' ||
+        !std::isfinite(strength) ||
         strength < 0.0F ||
         strength > 1.0F) {
         return 0.0F;
@@ -876,6 +884,8 @@ void retire_swapchain_copy_resources(
                 state.format,
                 scale_filter,
                 sharpening_strength,
+                dispatch.timestamp_period_ns,
+                queue_state.timestamp_valid_bits,
                 source_images)) {
             state.passthrough = std::move(passthrough);
 
@@ -885,7 +895,7 @@ void retire_swapchain_copy_resources(
                 sizeof(compute_message),
                 "[OpenFrameGen] Vulkan %s scaler ready: "
                 "%ux%u -> %ux%u, scale=%.3f, sharpen=%.3f, "
-                "images=%zu, local size=8x8.",
+                "images=%zu, local size=8x8, timing=%s.",
                 scale_filter_name(scale_filter),
                 state.extent.width,
                 state.extent.height,
@@ -893,7 +903,8 @@ void retire_swapchain_copy_resources(
                 output_extent.height,
                 static_cast<double>(scale_factor),
                 static_cast<double>(sharpening_strength),
-                state.copy_slots.size());
+                state.copy_slots.size(),
+                state.passthrough->timing_enabled() ? "on" : "off");
             log_message(compute_message);
         } else {
             log_message(
@@ -1184,6 +1195,11 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
                 next_gipa(
                     *instance,
                     "vkGetPhysicalDeviceMemoryProperties")),
+        .get_physical_device_properties =
+            reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+                next_gipa(
+                    *instance,
+                    "vkGetPhysicalDeviceProperties")),
         .get_physical_device_format_properties =
             reinterpret_cast<PFN_vkGetPhysicalDeviceFormatProperties>(
                 next_gipa(
@@ -1298,6 +1314,15 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateDevice(
         instance_dispatch.get_physical_device_memory_properties(
             physical_device,
             &dispatch.memory_properties);
+    }
+
+    if (instance_dispatch.get_physical_device_properties != nullptr) {
+        VkPhysicalDeviceProperties properties{};
+        instance_dispatch.get_physical_device_properties(
+            physical_device,
+            &properties);
+        dispatch.timestamp_period_ns =
+            properties.limits.timestampPeriod;
     }
 
 #define OFG_LOAD_DEVICE(name, field) \
@@ -1444,6 +1469,7 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue(
 
     if (queue != nullptr && *queue != VK_NULL_HANDLE) {
         VkQueueFlags capabilities = 0;
+        std::uint32_t timestamp_valid_bits = 0;
 
         InstanceDispatch instance_dispatch{};
         if (find_instance_dispatch(
@@ -1469,6 +1495,8 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue(
                 if (queue_family_index < family_count) {
                     capabilities =
                         properties[queue_family_index].queueFlags;
+                    timestamp_valid_bits =
+                        properties[queue_family_index].timestampValidBits;
                 }
             }
         }
@@ -1480,6 +1508,7 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue(
             .queue_index = queue_index,
             .flags = 0,
             .capabilities = capabilities,
+            .timestamp_valid_bits = timestamp_valid_bits,
         };
     }
 }
@@ -1502,6 +1531,7 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue2(
 
     if (queue != nullptr && *queue != VK_NULL_HANDLE) {
         VkQueueFlags capabilities = 0;
+        std::uint32_t timestamp_valid_bits = 0;
 
         InstanceDispatch instance_dispatch{};
         if (find_instance_dispatch(
@@ -1527,6 +1557,9 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue2(
                 if (queue_info->queueFamilyIndex < family_count) {
                     capabilities =
                         properties[queue_info->queueFamilyIndex].queueFlags;
+                    timestamp_valid_bits =
+                        properties[queue_info->queueFamilyIndex]
+                            .timestampValidBits;
                 }
             }
         }
@@ -1538,6 +1571,7 @@ VKAPI_ATTR void VKAPI_CALL ofgGetDeviceQueue2(
             .queue_index = queue_info->queueIndex,
             .flags = queue_info->flags,
             .capabilities = capabilities,
+            .timestamp_valid_bits = timestamp_valid_bits,
         };
     }
 }
@@ -1863,6 +1897,32 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                     log_message(
                         "[OpenFrameGen] First GPU frame copy "
                         "completed.");
+                }
+
+                if (wait_result == VK_SUCCESS &&
+                    slot.has_submission &&
+                    state->passthrough != nullptr &&
+                    state->passthrough->timing_enabled()) {
+                    ofg::vulkan::GpuTimingSample timing{};
+
+                    if (state->passthrough->read_timing(
+                            image_index,
+                            timing) &&
+                        !state->first_timing_logged) {
+                        state->first_timing_logged = true;
+
+                        char timing_message[256]{};
+                        std::snprintf(
+                            timing_message,
+                            sizeof(timing_message),
+                            "[OpenFrameGen] GPU timing: "
+                            "scaler=%.3f ms, sharpen=%.3f ms, "
+                            "total=%.3f ms.",
+                            timing.scaler_ms,
+                            timing.sharpening_ms,
+                            timing.total_ms);
+                        log_message(timing_message);
+                    }
                 }
 
                 if (wait_result == VK_SUCCESS) {

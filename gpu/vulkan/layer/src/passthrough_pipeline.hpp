@@ -16,6 +16,12 @@ enum class ScaleFilter : std::uint32_t {
     Bicubic = 1,
 };
 
+struct GpuTimingSample {
+    double scaler_ms = 0.0;
+    double sharpening_ms = 0.0;
+    double total_ms = 0.0;
+};
+
 class VulkanPassthroughPipeline {
 public:
     VulkanPassthroughPipeline() = default;
@@ -38,11 +44,17 @@ public:
         VkFormat source_format,
         ScaleFilter filter,
         float sharpening_strength,
+        float timestamp_period_ns,
+        std::uint32_t timestamp_valid_bits,
         const std::vector<VkImage>& source_images) noexcept;
 
     [[nodiscard]] bool ready() const noexcept;
     [[nodiscard]] bool sharpening_enabled() const noexcept;
     [[nodiscard]] float sharpening_strength() const noexcept;
+    [[nodiscard]] bool timing_enabled() const noexcept;
+    [[nodiscard]] bool read_timing(
+        std::uint32_t slot_index,
+        GpuTimingSample& sample) const noexcept;
     [[nodiscard]] VkExtent2D output_extent() const noexcept;
     [[nodiscard]] bool record(
         VkCommandBuffer command_buffer,
@@ -100,6 +112,11 @@ private:
     PFN_vkDestroyShaderModule destroy_shader_module_ = nullptr;
     PFN_vkCreateComputePipelines create_compute_pipelines_ = nullptr;
     PFN_vkDestroyPipeline destroy_pipeline_ = nullptr;
+    PFN_vkCreateQueryPool create_query_pool_ = nullptr;
+    PFN_vkDestroyQueryPool destroy_query_pool_ = nullptr;
+    PFN_vkGetQueryPoolResults get_query_pool_results_ = nullptr;
+    PFN_vkCmdResetQueryPool cmd_reset_query_pool_ = nullptr;
+    PFN_vkCmdWriteTimestamp cmd_write_timestamp_ = nullptr;
     PFN_vkCmdPipelineBarrier cmd_pipeline_barrier_ = nullptr;
     PFN_vkCmdBindPipeline cmd_bind_pipeline_ = nullptr;
     PFN_vkCmdBindDescriptorSets cmd_bind_descriptor_sets_ = nullptr;
@@ -111,6 +128,9 @@ private:
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkPipeline sharpen_pipeline_ = VK_NULL_HANDLE;
+    VkQueryPool timing_query_pool_ = VK_NULL_HANDLE;
+    float timestamp_period_ns_ = 0.0F;
+    std::uint32_t timestamp_valid_bits_ = 0;
 
     std::vector<Slot> slots_;
     bool ready_ = false;
