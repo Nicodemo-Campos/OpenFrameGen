@@ -374,7 +374,8 @@ template <typename Dispatchable>
 [[nodiscard]] bool supports_scaling(
     const DeviceDispatch& dispatch,
     VkFormat source_format,
-    ofg::vulkan::ScaleFilter filter) {
+    ofg::vulkan::ScaleFilter filter,
+    bool motion_validation) {
     InstanceDispatch instance_dispatch{};
 
     if (!find_instance_dispatch(
@@ -425,10 +426,14 @@ template <typename Dispatchable>
         (output_properties.optimalTilingFeatures & required_output) ==
         required_output;
 
-    constexpr VkFormatFeatureFlags required_motion =
+    VkFormatFeatureFlags required_motion =
         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
-        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+
+    if (motion_validation) {
+        required_motion |=
+            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    }
 
     const bool motion_supported =
         (motion_properties.optimalTilingFeatures & required_motion) ==
@@ -711,7 +716,8 @@ void retire_swapchain_copy_resources(
         supports_scaling(
             dispatch,
             state.format,
-            scale_filter);
+            scale_filter,
+            motion_validation);
 
     const VkCommandPoolCreateInfo pool_info{
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
