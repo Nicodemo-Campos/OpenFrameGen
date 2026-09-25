@@ -2072,6 +2072,18 @@ bool VulkanPassthroughPipeline::interpolated_frame_ready() const noexcept {
     return warp_outputs_[latest_index].initialized;
 }
 
+VkImage VulkanPassthroughPipeline::latest_interpolated_image() const noexcept {
+    if (!interpolated_frame_ready()) {
+        return VK_NULL_HANDLE;
+    }
+
+    const std::uint32_t latest_index =
+        (history_write_index_ + 1u) %
+        static_cast<std::uint32_t>(warp_outputs_.size());
+
+    return warp_outputs_[latest_index].image;
+}
+
 bool VulkanPassthroughPipeline::read_warp_validation(
     std::uint32_t slot_index,
     WarpValidationSample& sample) noexcept {
