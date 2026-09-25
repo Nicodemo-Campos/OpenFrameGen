@@ -1200,6 +1200,199 @@ void retire_swapchain_copy_resources(
     return true;
 }
 
+[[nodiscard]] bool record_generated_present_commands(
+    const DeviceDispatch& dispatch,
+    SwapchainState& state,
+    std::uint32_t destination_index) {
+    if (state.passthrough == nullptr ||
+        !state.passthrough->interpolated_frame_ready() ||
+        destination_index >= state.images.size() ||
+        state.synthetic_command_buffer == VK_NULL_HANDLE ||
+        dispatch.reset_command_buffer == nullptr ||
+        dispatch.begin_command_buffer == nullptr ||
+        dispatch.end_command_buffer == nullptr ||
+        dispatch.cmd_pipeline_barrier == nullptr ||
+        dispatch.cmd_blit_image == nullptr) {
+        return false;
+    }
+
+    const VkImage generated_image =
+        state.passthrough->latest_interpolated_image();
+
+    if (generated_image == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    if (dispatch.reset_command_buffer(
+            state.synthetic_command_buffer,
+            0) != VK_SUCCESS) {
+        return false;
+    }
+
+    const VkCommandBufferBeginInfo begin_info{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = nullptr,
+    };
+
+    if (dispatch.begin_command_buffer(
+            state.synthetic_command_buffer,
+            &begin_info) != VK_SUCCESS) {
+        return false;
+    }
+
+    std::array<VkImageMemoryBarrier, 2> prepare{
+        VkImageMemoryBarrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = generated_image,
+            .subresourceRange = VkImageSubresourceRange{
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                0,
+                1,
+                0,
+                1,
+            },
+        },
+        VkImageMemoryBarrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = state.images[destination_index],
+            .subresourceRange = VkImageSubresourceRange{
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                0,
+                1,
+                0,
+                1,
+            },
+        },
+    };
+
+    dispatch.cmd_pipeline_barrier(
+        state.synthetic_command_buffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        static_cast<std::uint32_t>(prepare.size()),
+        prepare.data());
+
+    const VkExtent2D generated_extent =
+        state.passthrough->output_extent();
+
+    const VkImageBlit blit{
+        .srcSubresource = VkImageSubresourceLayers{
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            0,
+            0,
+            1,
+        },
+        .srcOffsets = {
+            VkOffset3D{0, 0, 0},
+            VkOffset3D{
+                static_cast<std::int32_t>(generated_extent.width),
+                static_cast<std::int32_t>(generated_extent.height),
+                1,
+            },
+        },
+        .dstSubresource = VkImageSubresourceLayers{
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            0,
+            0,
+            1,
+        },
+        .dstOffsets = {
+            VkOffset3D{0, 0, 0},
+            VkOffset3D{
+                static_cast<std::int32_t>(state.extent.width),
+                static_cast<std::int32_t>(state.extent.height),
+                1,
+            },
+        },
+    };
+
+    dispatch.cmd_blit_image(
+        state.synthetic_command_buffer,
+        generated_image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        state.images[destination_index],
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &blit,
+        VK_FILTER_NEAREST);
+
+    std::array<VkImageMemoryBarrier, 2> restore{
+        VkImageMemoryBarrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = generated_image,
+            .subresourceRange = VkImageSubresourceRange{
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                0,
+                1,
+                0,
+                1,
+            },
+        },
+        VkImageMemoryBarrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = 0,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = state.images[destination_index],
+            .subresourceRange = VkImageSubresourceRange{
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                0,
+                1,
+                0,
+                1,
+            },
+        },
+    };
+
+    dispatch.cmd_pipeline_barrier(
+        state.synthetic_command_buffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        static_cast<std::uint32_t>(restore.size()),
+        restore.data());
+
+    return dispatch.end_command_buffer(
+               state.synthetic_command_buffer) == VK_SUCCESS;
+}
+
 [[nodiscard]] bool record_copy_commands(
     const DeviceDispatch& dispatch,
     const SwapchainState& state,
