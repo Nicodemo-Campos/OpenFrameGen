@@ -9,6 +9,7 @@
 #endif
 
 #if OFG_VULKAN_PASSTHROUGH_ENABLED
+#include "motion_estimation_spv.hpp"
 #include "passthrough_spv.hpp"
 #include "sharpen_spv.hpp"
 #endif
@@ -22,6 +23,8 @@ namespace ofg::vulkan {
 namespace {
 
 constexpr VkFormat kOutputFormat = VK_FORMAT_R8G8B8A8_UNORM;
+constexpr VkFormat kMotionFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
+constexpr std::uint32_t kMotionBlockSize = 8;
 constexpr std::uint32_t kTimingQueriesPerSlot = 3;
 
 template <typename Function>
