@@ -23,6 +23,13 @@ struct GpuTimingSample {
     double total_ms = 0.0;
 };
 
+struct MotionValidationSample {
+    float motion_x = 0.0F;
+    float motion_y = 0.0F;
+    float mean_error = 0.0F;
+    float valid = 0.0F;
+};
+
 class VulkanPassthroughPipeline {
 public:
     VulkanPassthroughPipeline() = default;
@@ -47,6 +54,7 @@ public:
         float sharpening_strength,
         float timestamp_period_ns,
         std::uint32_t timestamp_valid_bits,
+        bool motion_validation,
         const std::vector<VkImage>& source_images) noexcept;
 
     [[nodiscard]] bool ready() const noexcept;
@@ -61,11 +69,15 @@ public:
     [[nodiscard]] bool motion_estimation_enabled() const noexcept;
     [[nodiscard]] bool motion_field_ready() const noexcept;
     [[nodiscard]] VkExtent2D motion_field_extent() const noexcept;
+    [[nodiscard]] bool motion_validation_enabled() const noexcept;
+    [[nodiscard]] bool read_motion_validation(
+        std::uint32_t slot_index,
+        MotionValidationSample& sample) noexcept;
     void commit_frame_history() noexcept;
     [[nodiscard]] VkExtent2D output_extent() const noexcept;
     [[nodiscard]] bool record(
         VkCommandBuffer command_buffer,
-        std::uint32_t slot_index) const noexcept;
+        std::uint32_t slot_index) noexcept;
 
     void destroy() noexcept;
 
@@ -96,6 +108,9 @@ private:
         VkDeviceMemory sharpened_output_memory = VK_NULL_HANDLE;
         VkImageView sharpened_output_view = VK_NULL_HANDLE;
         VkDescriptorSet sharpen_descriptor_set = VK_NULL_HANDLE;
+        VkBuffer motion_validation_buffer = VK_NULL_HANDLE;
+        VkDeviceMemory motion_validation_memory = VK_NULL_HANDLE;
+        bool motion_validation_written = false;
     };
 
     [[nodiscard]] std::uint32_t find_memory_type(
@@ -114,10 +129,16 @@ private:
 
     PFN_vkCreateImage create_image_ = nullptr;
     PFN_vkDestroyImage destroy_image_ = nullptr;
+    PFN_vkCreateBuffer create_buffer_ = nullptr;
+    PFN_vkDestroyBuffer destroy_buffer_ = nullptr;
+    PFN_vkGetBufferMemoryRequirements get_buffer_memory_requirements_ = nullptr;
     PFN_vkGetImageMemoryRequirements get_image_memory_requirements_ = nullptr;
     PFN_vkAllocateMemory allocate_memory_ = nullptr;
     PFN_vkFreeMemory free_memory_ = nullptr;
     PFN_vkBindImageMemory bind_image_memory_ = nullptr;
+    PFN_vkBindBufferMemory bind_buffer_memory_ = nullptr;
+    PFN_vkMapMemory map_memory_ = nullptr;
+    PFN_vkUnmapMemory unmap_memory_ = nullptr;
     PFN_vkCreateImageView create_image_view_ = nullptr;
     PFN_vkDestroyImageView destroy_image_view_ = nullptr;
     PFN_vkCreateSampler create_sampler_ = nullptr;
@@ -141,6 +162,7 @@ private:
     PFN_vkCmdWriteTimestamp cmd_write_timestamp_ = nullptr;
     PFN_vkCmdPipelineBarrier cmd_pipeline_barrier_ = nullptr;
     PFN_vkCmdCopyImage cmd_copy_image_ = nullptr;
+    PFN_vkCmdCopyImageToBuffer cmd_copy_image_to_buffer_ = nullptr;
     PFN_vkCmdBindPipeline cmd_bind_pipeline_ = nullptr;
     PFN_vkCmdBindDescriptorSets cmd_bind_descriptor_sets_ = nullptr;
     PFN_vkCmdDispatch cmd_dispatch_ = nullptr;
@@ -164,6 +186,7 @@ private:
     VkExtent2D motion_extent_{};
     std::uint32_t history_write_index_ = 0;
     std::uint64_t history_frame_count_ = 0;
+    bool motion_validation_enabled_ = false;
     bool ready_ = false;
 };
 

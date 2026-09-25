@@ -130,6 +130,7 @@ struct SwapchainState {
     bool first_sharpen_logged = false;
     bool first_history_logged = false;
     bool first_motion_logged = false;
+    bool first_motion_validation_logged = false;
     bool first_timing_logged = false;
     bool first_present_logged = false;
 };
@@ -324,6 +325,15 @@ template <typename Dispatchable>
     return strength;
 }
 
+[[nodiscard]] bool configured_motion_validation() noexcept {
+    const char* value = std::getenv("OFG_MOTION_VALIDATE");
+
+    return value != nullptr &&
+           (std::strcmp(value, "1") == 0 ||
+            std::strcmp(value, "true") == 0 ||
+            std::strcmp(value, "on") == 0);
+}
+
 [[nodiscard]] ofg::vulkan::ScaleFilter configured_scale_filter() noexcept {
     const char* value = std::getenv("OFG_SCALE_FILTER");
 
@@ -364,7 +374,8 @@ template <typename Dispatchable>
 [[nodiscard]] bool supports_scaling(
     const DeviceDispatch& dispatch,
     VkFormat source_format,
-    ofg::vulkan::ScaleFilter filter) {
+    ofg::vulkan::ScaleFilter filter,
+    bool motion_validation) {
     InstanceDispatch instance_dispatch{};
 
     if (!find_instance_dispatch(
@@ -415,9 +426,14 @@ template <typename Dispatchable>
         (output_properties.optimalTilingFeatures & required_output) ==
         required_output;
 
-    constexpr VkFormatFeatureFlags required_motion =
+    VkFormatFeatureFlags required_motion =
         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+
+    if (motion_validation) {
+        required_motion |=
+            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    }
 
     const bool motion_supported =
         (motion_properties.optimalTilingFeatures & required_motion) ==
@@ -686,6 +702,8 @@ void retire_swapchain_copy_resources(
     const float scale_factor = configured_scale_factor();
     const float sharpening_strength =
         configured_sharpening_strength();
+    const bool motion_validation =
+        configured_motion_validation();
     const auto scale_filter = configured_scale_filter();
     const VkExtent2D output_extent =
         scaled_extent(state.extent, scale_factor);
@@ -698,7 +716,8 @@ void retire_swapchain_copy_resources(
         supports_scaling(
             dispatch,
             state.format,
-            scale_filter);
+            scale_filter,
+            motion_validation);
 
     const VkCommandPoolCreateInfo pool_info{
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -906,6 +925,7 @@ void retire_swapchain_copy_resources(
                 sharpening_strength,
                 dispatch.timestamp_period_ns,
                 queue_state.timestamp_valid_bits,
+                motion_validation,
                 source_images)) {
             state.passthrough = std::move(passthrough);
 
@@ -915,7 +935,8 @@ void retire_swapchain_copy_resources(
                 sizeof(compute_message),
                 "[OpenFrameGen] Vulkan %s scaler ready: "
                 "%ux%u -> %ux%u, scale=%.3f, sharpen=%.3f, "
-                "images=%zu, local size=8x8, timing=%s.",
+                "images=%zu, local size=8x8, timing=%s, "
+                "motion-validation=%s.",
                 scale_filter_name(scale_filter),
                 state.extent.width,
                 state.extent.height,
@@ -924,7 +945,10 @@ void retire_swapchain_copy_resources(
                 static_cast<double>(scale_factor),
                 static_cast<double>(sharpening_strength),
                 state.copy_slots.size(),
-                state.passthrough->timing_enabled() ? "on" : "off");
+                state.passthrough->timing_enabled() ? "on" : "off",
+                state.passthrough->motion_validation_enabled()
+                    ? "on"
+                    : "off");
             log_message(compute_message);
         } else {
             log_message(
@@ -1942,6 +1966,55 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             timing.sharpening_ms,
                             timing.total_ms);
                         log_message(timing_message);
+                    }
+                }
+
+                if (wait_result == VK_SUCCESS &&
+                    slot.has_submission &&
+                    state->passthrough != nullptr &&
+                    state->passthrough->motion_validation_enabled() &&
+                    !state->first_motion_validation_logged) {
+                    ofg::vulkan::MotionValidationSample validation{};
+
+                    if (state->passthrough->read_motion_validation(
+                            image_index,
+                            validation)) {
+                        state->first_motion_validation_logged = true;
+
+                        constexpr float expected_x = 3.0F;
+                        constexpr float expected_y = -2.0F;
+                        constexpr float vector_tolerance = 0.01F;
+                        constexpr float error_tolerance = 0.0001F;
+
+                        const bool vector_matches =
+                            std::fabs(
+                                validation.motion_x - expected_x) <=
+                                vector_tolerance &&
+                            std::fabs(
+                                validation.motion_y - expected_y) <=
+                                vector_tolerance;
+                        const bool error_matches =
+                            validation.mean_error <= error_tolerance;
+                        const bool sample_valid =
+                            validation.valid >= 0.5F;
+                        const bool passed =
+                            vector_matches &&
+                            error_matches &&
+                            sample_valid;
+
+                        char validation_message[320]{};
+                        std::snprintf(
+                            validation_message,
+                            sizeof(validation_message),
+                            "[OpenFrameGen] Motion validation %s: "
+                            "expected=(3,-2), measured=(%.3f,%.3f), "
+                            "mean-error=%.6f, valid=%.1f.",
+                            passed ? "PASS" : "FAIL",
+                            static_cast<double>(validation.motion_x),
+                            static_cast<double>(validation.motion_y),
+                            static_cast<double>(validation.mean_error),
+                            static_cast<double>(validation.valid));
+                        log_message(validation_message);
                     }
                 }
 

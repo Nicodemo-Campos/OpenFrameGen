@@ -33,7 +33,7 @@ This roadmap describes direction, not release promises.
 ## Phase 3 — Frame interpolation
 
 - [x] Frame history
-- [ ] Motion estimation prototype
+- [x] Motion estimation prototype
 - [ ] Bidirectional warping
 - [ ] Occlusion handling
 - [ ] 2x interpolation
