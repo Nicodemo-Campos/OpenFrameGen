@@ -1119,6 +1119,214 @@ bool VulkanPassthroughPipeline::initialize(
         }
     }
 
+    for (auto& motion_field : motion_fields_) {
+        const VkImageCreateInfo motion_info{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = kMotionFormat,
+            .extent = VkExtent3D{
+                motion_extent_.width,
+                motion_extent_.height,
+                1,
+            },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage =
+                VK_IMAGE_USAGE_STORAGE_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+
+        if (create_image_(
+                device_,
+                &motion_info,
+                nullptr,
+                &motion_field.image) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        VkMemoryRequirements motion_requirements{};
+        get_image_memory_requirements_(
+            device_,
+            motion_field.image,
+            &motion_requirements);
+
+        const std::uint32_t motion_memory_type =
+            find_memory_type(
+                motion_requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (motion_memory_type == UINT32_MAX) {
+            destroy();
+            return false;
+        }
+
+        const VkMemoryAllocateInfo motion_allocation_info{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .allocationSize = motion_requirements.size,
+            .memoryTypeIndex = motion_memory_type,
+        };
+
+        if (allocate_memory_(
+                device_,
+                &motion_allocation_info,
+                nullptr,
+                &motion_field.memory) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        if (bind_image_memory_(
+                device_,
+                motion_field.image,
+                motion_field.memory,
+                0) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        const VkImageViewCreateInfo motion_view_info{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = motion_field.image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = kMotionFormat,
+            .components = VkComponentMapping{
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = VkImageSubresourceRange{
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                0,
+                1,
+                0,
+                1,
+            },
+        };
+
+        if (create_image_view_(
+                device_,
+                &motion_view_info,
+                nullptr,
+                &motion_field.view) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+    }
+
+    const std::array<VkDescriptorSetLayout, 2> motion_layouts{
+        motion_descriptor_set_layout_,
+        motion_descriptor_set_layout_,
+    };
+    std::array<VkDescriptorSet, 2> motion_descriptor_sets{};
+
+    const VkDescriptorSetAllocateInfo motion_descriptor_allocate_info{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .descriptorPool = descriptor_pool_,
+        .descriptorSetCount =
+            static_cast<std::uint32_t>(motion_descriptor_sets.size()),
+        .pSetLayouts = motion_layouts.data(),
+    };
+
+    if (allocate_descriptor_sets_(
+            device_,
+            &motion_descriptor_allocate_info,
+            motion_descriptor_sets.data()) != VK_SUCCESS) {
+        destroy();
+        return false;
+    }
+
+    for (std::uint32_t index = 0;
+         index < motion_fields_.size();
+         ++index) {
+        const std::uint32_t previous_index =
+            (index + 1u) %
+            static_cast<std::uint32_t>(history_.size());
+
+        auto& motion_field = motion_fields_[index];
+        motion_field.descriptor_set =
+            motion_descriptor_sets[index];
+
+        const VkDescriptorImageInfo previous_descriptor{
+            .sampler = sampler_,
+            .imageView = history_[previous_index].view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+
+        const VkDescriptorImageInfo current_descriptor{
+            .sampler = sampler_,
+            .imageView = history_[index].view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+
+        const VkDescriptorImageInfo motion_output_descriptor{
+            .sampler = VK_NULL_HANDLE,
+            .imageView = motion_field.view,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+
+        const std::array<VkWriteDescriptorSet, 3> motion_writes{
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = motion_field.descriptor_set,
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType =
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &previous_descriptor,
+                .pBufferInfo = nullptr,
+                .pTexelBufferView = nullptr,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = motion_field.descriptor_set,
+                .dstBinding = 1,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType =
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &current_descriptor,
+                .pBufferInfo = nullptr,
+                .pTexelBufferView = nullptr,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = motion_field.descriptor_set,
+                .dstBinding = 2,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .pImageInfo = &motion_output_descriptor,
+                .pBufferInfo = nullptr,
+                .pTexelBufferView = nullptr,
+            },
+        };
+
+        update_descriptor_sets_(
+            device_,
+            static_cast<std::uint32_t>(motion_writes.size()),
+            motion_writes.data(),
+            0,
+            nullptr);
+    }
+
     history_write_index_ = 0;
     history_frame_count_ = 0;
 
