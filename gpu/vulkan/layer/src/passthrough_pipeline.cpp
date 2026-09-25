@@ -16,6 +16,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <vector>
 
 namespace ofg::vulkan {
@@ -1565,6 +1566,54 @@ VkExtent2D VulkanPassthroughPipeline::motion_field_extent() const noexcept {
     return motion_extent_;
 }
 
+bool VulkanPassthroughPipeline::motion_validation_enabled() const noexcept {
+    return motion_validation_enabled_;
+}
+
+bool VulkanPassthroughPipeline::read_motion_validation(
+    std::uint32_t slot_index,
+    MotionValidationSample& sample) noexcept {
+    sample = {};
+
+    if (!motion_validation_enabled_ ||
+        slot_index >= slots_.size()) {
+        return false;
+    }
+
+    auto& slot = slots_[slot_index];
+    if (!slot.motion_validation_written ||
+        slot.motion_validation_memory == VK_NULL_HANDLE ||
+        map_memory_ == nullptr ||
+        unmap_memory_ == nullptr) {
+        return false;
+    }
+
+    void* mapped = nullptr;
+    const VkResult result =
+        map_memory_(
+            device_,
+            slot.motion_validation_memory,
+            0,
+            sizeof(MotionValidationSample),
+            0,
+            &mapped);
+
+    if (result != VK_SUCCESS || mapped == nullptr) {
+        return false;
+    }
+
+    std::memcpy(
+        &sample,
+        mapped,
+        sizeof(MotionValidationSample));
+    unmap_memory_(
+        device_,
+        slot.motion_validation_memory);
+
+    slot.motion_validation_written = false;
+    return true;
+}
+
 void VulkanPassthroughPipeline::commit_frame_history() noexcept {
     if (!ready_ ||
         history_write_index_ >= history_.size() ||
@@ -1594,14 +1643,15 @@ VkExtent2D VulkanPassthroughPipeline::output_extent() const noexcept {
 
 bool VulkanPassthroughPipeline::record(
     VkCommandBuffer command_buffer,
-    std::uint32_t slot_index) const noexcept {
+    std::uint32_t slot_index) noexcept {
     if (!ready_ ||
         command_buffer == VK_NULL_HANDLE ||
         slot_index >= slots_.size()) {
         return false;
     }
 
-    const auto& slot = slots_[slot_index];
+    auto& slot = slots_[slot_index];
+    slot.motion_validation_written = false;
 
     const bool record_timing = timing_enabled();
     const std::uint32_t first_timing_query =
