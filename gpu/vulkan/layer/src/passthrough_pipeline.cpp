@@ -880,6 +880,116 @@ bool VulkanPassthroughPipeline::initialize(
         }
     }
 
+    for (auto& history_image : history_) {
+        const VkImageCreateInfo history_info{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = kOutputFormat,
+            .extent = VkExtent3D{
+                output_extent_.width,
+                output_extent_.height,
+                1,
+            },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage =
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+
+        if (create_image_(
+                device_,
+                &history_info,
+                nullptr,
+                &history_image.image) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        VkMemoryRequirements history_requirements{};
+        get_image_memory_requirements_(
+            device_,
+            history_image.image,
+            &history_requirements);
+
+        const std::uint32_t history_memory_type =
+            find_memory_type(
+                history_requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (history_memory_type == UINT32_MAX) {
+            destroy();
+            return false;
+        }
+
+        const VkMemoryAllocateInfo history_allocation_info{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .allocationSize = history_requirements.size,
+            .memoryTypeIndex = history_memory_type,
+        };
+
+        if (allocate_memory_(
+                device_,
+                &history_allocation_info,
+                nullptr,
+                &history_image.memory) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        if (bind_image_memory_(
+                device_,
+                history_image.image,
+                history_image.memory,
+                0) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        const VkImageViewCreateInfo history_view_info{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = history_image.image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = kOutputFormat,
+            .components = VkComponentMapping{
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = VkImageSubresourceRange{
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                0,
+                1,
+                0,
+                1,
+            },
+        };
+
+        if (create_image_view_(
+                device_,
+                &history_view_info,
+                nullptr,
+                &history_image.view) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+    }
+
+    history_write_index_ = 0;
+    history_frame_count_ = 0;
+
     ready_ = true;
     return true;
 #endif
