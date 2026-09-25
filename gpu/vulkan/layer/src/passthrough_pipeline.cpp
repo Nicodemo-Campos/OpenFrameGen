@@ -1252,7 +1252,8 @@ bool VulkanPassthroughPipeline::initialize(
             .tiling = VK_IMAGE_TILING_OPTIMAL,
             .usage =
                 VK_IMAGE_USAGE_STORAGE_BIT |
-                VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = nullptr,
@@ -2064,36 +2065,147 @@ bool VulkanPassthroughPipeline::record(
             motion_group_count_y,
             1);
 
-        const VkImageMemoryBarrier motion_ready{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = motion_target.image,
-            .subresourceRange = VkImageSubresourceRange{
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                0,
-                1,
-                0,
-                1,
-            },
-        };
+        if (motion_validation_enabled_ &&
+            slot.motion_validation_buffer != VK_NULL_HANDLE) {
+            const VkImageMemoryBarrier motion_to_transfer{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = motion_target.image,
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            };
 
-        cmd_pipeline_barrier_(
-            command_buffer,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0,
-            0,
-            nullptr,
-            0,
-            nullptr,
-            1,
-            &motion_ready);
+            cmd_pipeline_barrier_(
+                command_buffer,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0,
+                nullptr,
+                0,
+                nullptr,
+                1,
+                &motion_to_transfer);
+
+            const std::uint32_t sample_x =
+                motion_extent_.width / 2u;
+            const std::uint32_t sample_y =
+                motion_extent_.height / 2u;
+
+            const VkBufferImageCopy validation_copy{
+                .bufferOffset = 0,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageSubresource = VkImageSubresourceLayers{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    0,
+                    1,
+                },
+                .imageOffset = VkOffset3D{
+                    static_cast<std::int32_t>(sample_x),
+                    static_cast<std::int32_t>(sample_y),
+                    0,
+                },
+                .imageExtent = VkExtent3D{1, 1, 1},
+            };
+
+            cmd_copy_image_to_buffer_(
+                command_buffer,
+                motion_target.image,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                slot.motion_validation_buffer,
+                1,
+                &validation_copy);
+
+            const VkImageMemoryBarrier motion_ready{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = motion_target.image,
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            };
+
+            const VkBufferMemoryBarrier validation_ready{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = slot.motion_validation_buffer,
+                .offset = 0,
+                .size = sizeof(MotionValidationSample),
+            };
+
+            cmd_pipeline_barrier_(
+                command_buffer,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                    VK_PIPELINE_STAGE_HOST_BIT,
+                0,
+                0,
+                nullptr,
+                1,
+                &validation_ready,
+                1,
+                &motion_ready);
+
+            slot.motion_validation_written = true;
+        } else {
+            const VkImageMemoryBarrier motion_ready{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = motion_target.image,
+                .subresourceRange = VkImageSubresourceRange{
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    0,
+                    1,
+                    0,
+                    1,
+                },
+            };
+
+            cmd_pipeline_barrier_(
+                command_buffer,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0,
+                0,
+                nullptr,
+                0,
+                nullptr,
+                1,
+                &motion_ready);
+        }
     }
 
     return true;
