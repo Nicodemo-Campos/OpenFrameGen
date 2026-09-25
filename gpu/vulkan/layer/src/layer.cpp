@@ -164,6 +164,7 @@ struct SwapchainState {
     bool first_warp_validation_logged = false;
     bool first_cadence_logged = false;
     bool first_2x_present_logged = false;
+    bool first_bounded_acquire_logged = false;
     bool first_timing_logged = false;
     bool first_present_logged = false;
 
