@@ -15,6 +15,7 @@
 #include "sharpen_spv.hpp"
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -3186,6 +3187,24 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     history_frame_count_ = 0;
 
     for (auto& slot : slots_) {
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_buffer_ != nullptr &&
+            slot.warp_validation_buffer != VK_NULL_HANDLE) {
+            destroy_buffer_(
+                device_,
+                slot.warp_validation_buffer,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            free_memory_ != nullptr &&
+            slot.warp_validation_memory != VK_NULL_HANDLE) {
+            free_memory_(
+                device_,
+                slot.warp_validation_memory,
+                nullptr);
+        }
+
         if (device_ != VK_NULL_HANDLE &&
             destroy_buffer_ != nullptr &&
             slot.motion_validation_buffer != VK_NULL_HANDLE) {
