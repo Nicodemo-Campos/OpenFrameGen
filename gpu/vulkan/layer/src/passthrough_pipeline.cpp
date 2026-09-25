@@ -68,10 +68,16 @@ bool VulkanPassthroughPipeline::load_functions(
 
     OFG_LOAD(vkCreateImage, create_image_);
     OFG_LOAD(vkDestroyImage, destroy_image_);
+    OFG_LOAD(vkCreateBuffer, create_buffer_);
+    OFG_LOAD(vkDestroyBuffer, destroy_buffer_);
     OFG_LOAD(vkGetImageMemoryRequirements, get_image_memory_requirements_);
+    OFG_LOAD(vkGetBufferMemoryRequirements, get_buffer_memory_requirements_);
     OFG_LOAD(vkAllocateMemory, allocate_memory_);
     OFG_LOAD(vkFreeMemory, free_memory_);
     OFG_LOAD(vkBindImageMemory, bind_image_memory_);
+    OFG_LOAD(vkBindBufferMemory, bind_buffer_memory_);
+    OFG_LOAD(vkMapMemory, map_memory_);
+    OFG_LOAD(vkUnmapMemory, unmap_memory_);
     OFG_LOAD(vkCreateImageView, create_image_view_);
     OFG_LOAD(vkDestroyImageView, destroy_image_view_);
     OFG_LOAD(vkCreateSampler, create_sampler_);
@@ -95,6 +101,7 @@ bool VulkanPassthroughPipeline::load_functions(
     OFG_LOAD(vkCmdWriteTimestamp, cmd_write_timestamp_);
     OFG_LOAD(vkCmdPipelineBarrier, cmd_pipeline_barrier_);
     OFG_LOAD(vkCmdCopyImage, cmd_copy_image_);
+    OFG_LOAD(vkCmdCopyImageToBuffer, cmd_copy_image_to_buffer_);
     OFG_LOAD(vkCmdBindPipeline, cmd_bind_pipeline_);
     OFG_LOAD(vkCmdBindDescriptorSets, cmd_bind_descriptor_sets_);
     OFG_LOAD(vkCmdDispatch, cmd_dispatch_);
@@ -103,10 +110,16 @@ bool VulkanPassthroughPipeline::load_functions(
 
     return create_image_ != nullptr &&
            destroy_image_ != nullptr &&
+           create_buffer_ != nullptr &&
+           destroy_buffer_ != nullptr &&
            get_image_memory_requirements_ != nullptr &&
+           get_buffer_memory_requirements_ != nullptr &&
            allocate_memory_ != nullptr &&
            free_memory_ != nullptr &&
            bind_image_memory_ != nullptr &&
+           bind_buffer_memory_ != nullptr &&
+           map_memory_ != nullptr &&
+           unmap_memory_ != nullptr &&
            create_image_view_ != nullptr &&
            destroy_image_view_ != nullptr &&
            create_sampler_ != nullptr &&
@@ -125,6 +138,7 @@ bool VulkanPassthroughPipeline::load_functions(
            destroy_pipeline_ != nullptr &&
            cmd_pipeline_barrier_ != nullptr &&
            cmd_copy_image_ != nullptr &&
+           cmd_copy_image_to_buffer_ != nullptr &&
            cmd_bind_pipeline_ != nullptr &&
            cmd_bind_descriptor_sets_ != nullptr &&
            cmd_dispatch_ != nullptr;
