@@ -1,0 +1,84 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D previous_frame;
+layout(set = 0, binding = 1) uniform sampler2D current_frame;
+layout(set = 0, binding = 2) uniform sampler2D motion_field;
+layout(set = 0, binding = 3, rgba8) writeonly uniform image2D interpolated_frame;
+
+const float interpolation_t = 0.5;
+const int motion_block_size = 8;
+
+vec4 sample_bilinear(sampler2D image_sampler, vec2 pixel_position) {
+    const ivec2 extent = textureSize(image_sampler, 0);
+    const vec2 max_position = vec2(extent - ivec2(1));
+    const vec2 position =
+        clamp(pixel_position, vec2(0.0), max_position);
+
+    const ivec2 p00 = ivec2(floor(position));
+    const ivec2 p11 = min(p00 + ivec2(1), extent - ivec2(1));
+    const ivec2 p10 = ivec2(p11.x, p00.y);
+    const ivec2 p01 = ivec2(p00.x, p11.y);
+    const vec2 fraction = fract(position);
+
+    const vec4 c00 = texelFetch(image_sampler, p00, 0);
+    const vec4 c10 = texelFetch(image_sampler, p10, 0);
+    const vec4 c01 = texelFetch(image_sampler, p01, 0);
+    const vec4 c11 = texelFetch(image_sampler, p11, 0);
+
+    const vec4 top = mix(c00, c10, fraction.x);
+    const vec4 bottom = mix(c01, c11, fraction.x);
+    return mix(top, bottom, fraction.y);
+}
+
+void main() {
+    const ivec2 output_coordinate =
+        ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 output_extent =
+        imageSize(interpolated_frame);
+
+    if (output_coordinate.x >= output_extent.x ||
+        output_coordinate.y >= output_extent.y) {
+        return;
+    }
+
+    const ivec2 field_extent =
+        textureSize(motion_field, 0);
+    const ivec2 field_coordinate =
+        clamp(
+            output_coordinate / motion_block_size,
+            ivec2(0),
+            field_extent - ivec2(1));
+
+    // Motion is stored in processed-frame pixels as current - previous.
+    const vec2 motion =
+        texelFetch(
+            motion_field,
+            field_coordinate,
+            0).xy;
+
+    const vec2 output_position =
+        vec2(output_coordinate);
+
+    // At t=0.5, trace from the midpoint back toward the previous frame
+    // and forward toward the current frame, then blend the two samples.
+    const vec2 previous_position =
+        output_position - motion * interpolation_t;
+    const vec2 current_position =
+        output_position + motion * (1.0 - interpolation_t);
+
+    const vec4 previous_color =
+        sample_bilinear(
+            previous_frame,
+            previous_position);
+    const vec4 current_color =
+        sample_bilinear(
+            current_frame,
+            current_position);
+
+    imageStore(
+        interpolated_frame,
+        output_coordinate,
+        mix(previous_color, current_color, interpolation_t));
+}
