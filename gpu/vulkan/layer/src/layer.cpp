@@ -1963,6 +1963,55 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                     }
                 }
 
+                if (wait_result == VK_SUCCESS &&
+                    slot.has_submission &&
+                    state->passthrough != nullptr &&
+                    state->passthrough->motion_validation_enabled() &&
+                    !state->first_motion_validation_logged) {
+                    ofg::vulkan::MotionValidationSample validation{};
+
+                    if (state->passthrough->read_motion_validation(
+                            image_index,
+                            validation)) {
+                        state->first_motion_validation_logged = true;
+
+                        constexpr float expected_x = 3.0F;
+                        constexpr float expected_y = -2.0F;
+                        constexpr float vector_tolerance = 0.01F;
+                        constexpr float error_tolerance = 0.0001F;
+
+                        const bool vector_matches =
+                            std::fabs(
+                                validation.motion_x - expected_x) <=
+                                vector_tolerance &&
+                            std::fabs(
+                                validation.motion_y - expected_y) <=
+                                vector_tolerance;
+                        const bool error_matches =
+                            validation.mean_error <= error_tolerance;
+                        const bool sample_valid =
+                            validation.valid >= 0.5F;
+                        const bool passed =
+                            vector_matches &&
+                            error_matches &&
+                            sample_valid;
+
+                        char validation_message[320]{};
+                        std::snprintf(
+                            validation_message,
+                            sizeof(validation_message),
+                            "[OpenFrameGen] Motion validation %s: "
+                            "expected=(3,-2), measured=(%.3f,%.3f), "
+                            "mean-error=%.6f, valid=%.1f.",
+                            passed ? "PASS" : "FAIL",
+                            static_cast<double>(validation.motion_x),
+                            static_cast<double>(validation.motion_y),
+                            static_cast<double>(validation.mean_error),
+                            static_cast<double>(validation.valid));
+                        log_message(validation_message);
+                    }
+                }
+
                 if (wait_result == VK_SUCCESS) {
                     slot.has_submission = false;
                 }
