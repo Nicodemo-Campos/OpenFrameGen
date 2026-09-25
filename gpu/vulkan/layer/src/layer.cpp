@@ -1709,10 +1709,46 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
+    const bool interpolate_2x_requested =
+        configured_2x_interpolation();
+
+    VkSwapchainCreateInfoKHR effective_create_info =
+        *create_info;
+
+    bool transfer_dst_enabled =
+        (effective_create_info.imageUsage &
+         VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
+
+    if (interpolate_2x_requested &&
+        effective_create_info.presentMode == VK_PRESENT_MODE_FIFO_KHR &&
+        !transfer_dst_enabled) {
+        InstanceDispatch instance_dispatch{};
+
+        if (find_instance_dispatch(
+                dispatch_key(dispatch.physical_device),
+                instance_dispatch) &&
+            instance_dispatch
+                    .get_physical_device_surface_capabilities != nullptr) {
+            VkSurfaceCapabilitiesKHR capabilities{};
+
+            if (instance_dispatch
+                    .get_physical_device_surface_capabilities(
+                        dispatch.physical_device,
+                        create_info->surface,
+                        &capabilities) == VK_SUCCESS &&
+                (capabilities.supportedUsageFlags &
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0) {
+                effective_create_info.imageUsage |=
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                transfer_dst_enabled = true;
+            }
+        }
+    }
+
     const VkResult result =
         dispatch.create_swapchain(
             device,
-            create_info,
+            &effective_create_info,
             allocator,
             swapchain);
 
@@ -1726,12 +1762,14 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         g_swapchain_generation.fetch_add(
             1,
             std::memory_order_relaxed) + 1;
-    state->extent = create_info->imageExtent;
-    state->format = create_info->imageFormat;
-    state->color_space = create_info->imageColorSpace;
-    state->present_mode = create_info->presentMode;
-    state->image_usage = create_info->imageUsage;
-    state->min_image_count = create_info->minImageCount;
+    state->extent = effective_create_info.imageExtent;
+    state->format = effective_create_info.imageFormat;
+    state->color_space = effective_create_info.imageColorSpace;
+    state->present_mode = effective_create_info.presentMode;
+    state->image_usage = effective_create_info.imageUsage;
+    state->min_image_count = effective_create_info.minImageCount;
+    state->interpolate_2x_requested = interpolate_2x_requested;
+    state->transfer_dst_enabled = transfer_dst_enabled;
 
     {
         std::scoped_lock lock{g_state_mutex};
@@ -1745,14 +1783,14 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         "[OpenFrameGen] Swapchain #%llu created: %ux%u, "
         "format=%s(%d), present=%s(%d), minImages=%u, usage=0x%08x.",
         static_cast<unsigned long long>(state->generation),
-        create_info->imageExtent.width,
-        create_info->imageExtent.height,
-        format_name(create_info->imageFormat),
-        static_cast<int>(create_info->imageFormat),
-        present_mode_name(create_info->presentMode),
-        static_cast<int>(create_info->presentMode),
-        create_info->minImageCount,
-        static_cast<unsigned int>(create_info->imageUsage));
+        effective_create_info.imageExtent.width,
+        effective_create_info.imageExtent.height,
+        format_name(effective_create_info.imageFormat),
+        static_cast<int>(effective_create_info.imageFormat),
+        present_mode_name(effective_create_info.presentMode),
+        static_cast<int>(effective_create_info.presentMode),
+        effective_create_info.minImageCount,
+        static_cast<unsigned int>(effective_create_info.imageUsage));
     log_message(message);
 
     return VK_SUCCESS;
