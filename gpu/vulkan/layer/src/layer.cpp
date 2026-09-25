@@ -129,6 +129,7 @@ struct SwapchainState {
     bool first_passthrough_logged = false;
     bool first_sharpen_logged = false;
     bool first_history_logged = false;
+    bool first_motion_logged = false;
     bool first_timing_logged = false;
     bool first_present_logged = false;
 };
@@ -2029,6 +2030,26 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                     history_extent.width,
                                     history_extent.height);
                                 log_message(history_message);
+                            }
+
+                            if (state->passthrough->motion_field_ready() &&
+                                !state->first_motion_logged) {
+                                state->first_motion_logged = true;
+
+                                const VkExtent2D motion_extent =
+                                    state->passthrough
+                                        ->motion_field_extent();
+
+                                char motion_message[256]{};
+                                std::snprintf(
+                                    motion_message,
+                                    sizeof(motion_message),
+                                    "[OpenFrameGen] First Vulkan motion "
+                                    "estimation field ready: %ux%u "
+                                    "blocks (8x8 pixels, search radius=4).",
+                                    motion_extent.width,
+                                    motion_extent.height);
+                                log_message(motion_message);
                             }
                         }
                     } else {
