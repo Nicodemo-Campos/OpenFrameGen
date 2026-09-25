@@ -15,6 +15,7 @@
 #include "sharpen_spv.hpp"
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -686,6 +687,22 @@ bool VulkanPassthroughPipeline::initialize(
         return false;
     }
 
+    const std::uint32_t warp_validation_mode =
+        motion_validation_enabled_ ? 1u : 0u;
+
+    const VkSpecializationMapEntry warp_validation_entry{
+        .constantID = 0,
+        .offset = 0,
+        .size = sizeof(warp_validation_mode),
+    };
+
+    const VkSpecializationInfo warp_specialization{
+        .mapEntryCount = 1,
+        .pMapEntries = &warp_validation_entry,
+        .dataSize = sizeof(warp_validation_mode),
+        .pData = &warp_validation_mode,
+    };
+
     const VkPipelineShaderStageCreateInfo warp_stage_info{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .pNext = nullptr,
@@ -693,7 +710,7 @@ bool VulkanPassthroughPipeline::initialize(
         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
         .module = warp_shader_module,
         .pName = "main",
-        .pSpecializationInfo = nullptr,
+        .pSpecializationInfo = &warp_specialization,
     };
 
     const VkComputePipelineCreateInfo warp_pipeline_info{
@@ -1152,6 +1169,82 @@ bool VulkanPassthroughPipeline::initialize(
                     device_,
                     slot.motion_validation_buffer,
                     slot.motion_validation_memory,
+                    0) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            const VkBufferCreateInfo warp_validation_buffer_info{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .size = sizeof(WarpValidationSample),
+                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+            };
+
+            if (create_buffer_(
+                    device_,
+                    &warp_validation_buffer_info,
+                    nullptr,
+                    &slot.warp_validation_buffer) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            VkMemoryRequirements warp_validation_requirements{};
+            get_buffer_memory_requirements_(
+                device_,
+                slot.warp_validation_buffer,
+                &warp_validation_requirements);
+
+            std::uint32_t warp_validation_memory_type = UINT32_MAX;
+
+            for (std::uint32_t memory_index = 0;
+                 memory_index < memory_properties_.memoryTypeCount;
+                 ++memory_index) {
+                const bool compatible =
+                    (warp_validation_requirements.memoryTypeBits &
+                     (1u << memory_index)) != 0;
+                const bool host_coherent =
+                    (memory_properties_.memoryTypes[memory_index]
+                         .propertyFlags &
+                     validation_memory_flags) ==
+                    validation_memory_flags;
+
+                if (compatible && host_coherent) {
+                    warp_validation_memory_type = memory_index;
+                    break;
+                }
+            }
+
+            if (warp_validation_memory_type == UINT32_MAX) {
+                destroy();
+                return false;
+            }
+
+            const VkMemoryAllocateInfo warp_validation_allocation_info{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .allocationSize = warp_validation_requirements.size,
+                .memoryTypeIndex = warp_validation_memory_type,
+            };
+
+            if (allocate_memory_(
+                    device_,
+                    &warp_validation_allocation_info,
+                    nullptr,
+                    &slot.warp_validation_memory) != VK_SUCCESS) {
+                destroy();
+                return false;
+            }
+
+            if (bind_buffer_memory_(
+                    device_,
+                    slot.warp_validation_buffer,
+                    slot.warp_validation_memory,
                     0) != VK_SUCCESS) {
                 destroy();
                 return false;
@@ -1979,6 +2072,50 @@ bool VulkanPassthroughPipeline::interpolated_frame_ready() const noexcept {
     return warp_outputs_[latest_index].initialized;
 }
 
+bool VulkanPassthroughPipeline::read_warp_validation(
+    std::uint32_t slot_index,
+    WarpValidationSample& sample) noexcept {
+    sample = {};
+
+    if (!motion_validation_enabled_ ||
+        slot_index >= slots_.size()) {
+        return false;
+    }
+
+    auto& slot = slots_[slot_index];
+    if (!slot.warp_validation_written ||
+        slot.warp_validation_memory == VK_NULL_HANDLE ||
+        map_memory_ == nullptr ||
+        unmap_memory_ == nullptr) {
+        return false;
+    }
+
+    void* mapped = nullptr;
+    const VkResult result =
+        map_memory_(
+            device_,
+            slot.warp_validation_memory,
+            0,
+            sizeof(WarpValidationSample),
+            0,
+            &mapped);
+
+    if (result != VK_SUCCESS || mapped == nullptr) {
+        return false;
+    }
+
+    std::memcpy(
+        &sample,
+        mapped,
+        sizeof(WarpValidationSample));
+    unmap_memory_(
+        device_,
+        slot.warp_validation_memory);
+
+    slot.warp_validation_written = false;
+    return true;
+}
+
 bool VulkanPassthroughPipeline::read_motion_validation(
     std::uint32_t slot_index,
     MotionValidationSample& sample) noexcept {
@@ -2066,6 +2203,7 @@ bool VulkanPassthroughPipeline::record(
 
     auto& slot = slots_[slot_index];
     slot.motion_validation_written = false;
+    slot.warp_validation_written = false;
 
     const bool record_timing = timing_enabled();
     const std::uint32_t first_timing_query =
@@ -2695,36 +2833,172 @@ bool VulkanPassthroughPipeline::record(
                 warp_group_count_y,
                 1);
 
-            const VkImageMemoryBarrier warp_ready{
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .pNext = nullptr,
-                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = warp_output.image,
-                .subresourceRange = VkImageSubresourceRange{
-                    VK_IMAGE_ASPECT_COLOR_BIT,
-                    0,
-                    1,
-                    0,
-                    1,
-                },
-            };
+            if (motion_validation_enabled_ &&
+                slot.warp_validation_buffer != VK_NULL_HANDLE) {
+                const VkImageMemoryBarrier warp_to_transfer{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = warp_output.image,
+                    .subresourceRange = VkImageSubresourceRange{
+                        VK_IMAGE_ASPECT_COLOR_BIT,
+                        0,
+                        1,
+                        0,
+                        1,
+                    },
+                };
 
-            cmd_pipeline_barrier_(
-                command_buffer,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                0,
-                0,
-                nullptr,
-                0,
-                nullptr,
-                1,
-                &warp_ready);
+                cmd_pipeline_barrier_(
+                    command_buffer,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0,
+                    0,
+                    nullptr,
+                    0,
+                    nullptr,
+                    1,
+                    &warp_to_transfer);
+
+                const std::uint32_t midpoint_x =
+                    output_extent_.width / 2u;
+                const std::uint32_t midpoint_y =
+                    output_extent_.height / 2u;
+                const std::uint32_t occlusion_x =
+                    std::min(
+                        midpoint_x + 16u,
+                        output_extent_.width - 1u);
+
+                const std::array<VkBufferImageCopy, 2>
+                    validation_regions{
+                        VkBufferImageCopy{
+                            .bufferOffset = 0,
+                            .bufferRowLength = 0,
+                            .bufferImageHeight = 0,
+                            .imageSubresource = VkImageSubresourceLayers{
+                                VK_IMAGE_ASPECT_COLOR_BIT,
+                                0,
+                                0,
+                                1,
+                            },
+                            .imageOffset = VkOffset3D{
+                                static_cast<std::int32_t>(midpoint_x),
+                                static_cast<std::int32_t>(midpoint_y),
+                                0,
+                            },
+                            .imageExtent = VkExtent3D{1, 1, 1},
+                        },
+                        VkBufferImageCopy{
+                            .bufferOffset = sizeof(std::uint32_t),
+                            .bufferRowLength = 0,
+                            .bufferImageHeight = 0,
+                            .imageSubresource = VkImageSubresourceLayers{
+                                VK_IMAGE_ASPECT_COLOR_BIT,
+                                0,
+                                0,
+                                1,
+                            },
+                            .imageOffset = VkOffset3D{
+                                static_cast<std::int32_t>(occlusion_x),
+                                static_cast<std::int32_t>(midpoint_y),
+                                0,
+                            },
+                            .imageExtent = VkExtent3D{1, 1, 1},
+                        },
+                    };
+
+                cmd_copy_image_to_buffer_(
+                    command_buffer,
+                    warp_output.image,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    slot.warp_validation_buffer,
+                    static_cast<std::uint32_t>(
+                        validation_regions.size()),
+                    validation_regions.data());
+
+                const VkImageMemoryBarrier warp_ready{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = warp_output.image,
+                    .subresourceRange = VkImageSubresourceRange{
+                        VK_IMAGE_ASPECT_COLOR_BIT,
+                        0,
+                        1,
+                        0,
+                        1,
+                    },
+                };
+
+                const VkBufferMemoryBarrier validation_ready{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = slot.warp_validation_buffer,
+                    .offset = 0,
+                    .size = sizeof(WarpValidationSample),
+                };
+
+                cmd_pipeline_barrier_(
+                    command_buffer,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                        VK_PIPELINE_STAGE_HOST_BIT,
+                    0,
+                    0,
+                    nullptr,
+                    1,
+                    &validation_ready,
+                    1,
+                    &warp_ready);
+
+                slot.warp_validation_written = true;
+            } else {
+                const VkImageMemoryBarrier warp_ready{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = warp_output.image,
+                    .subresourceRange = VkImageSubresourceRange{
+                        VK_IMAGE_ASPECT_COLOR_BIT,
+                        0,
+                        1,
+                        0,
+                        1,
+                    },
+                };
+
+                cmd_pipeline_barrier_(
+                    command_buffer,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0,
+                    0,
+                    nullptr,
+                    0,
+                    nullptr,
+                    1,
+                    &warp_ready);
+            }
         }
     }
 
@@ -2913,6 +3187,24 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     history_frame_count_ = 0;
 
     for (auto& slot : slots_) {
+        if (device_ != VK_NULL_HANDLE &&
+            destroy_buffer_ != nullptr &&
+            slot.warp_validation_buffer != VK_NULL_HANDLE) {
+            destroy_buffer_(
+                device_,
+                slot.warp_validation_buffer,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            free_memory_ != nullptr &&
+            slot.warp_validation_memory != VK_NULL_HANDLE) {
+            free_memory_(
+                device_,
+                slot.warp_validation_memory,
+                nullptr);
+        }
+
         if (device_ != VK_NULL_HANDLE &&
             destroy_buffer_ != nullptr &&
             slot.motion_validation_buffer != VK_NULL_HANDLE) {
