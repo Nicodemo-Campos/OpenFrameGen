@@ -2367,6 +2367,24 @@ void VulkanPassthroughPipeline::destroy() noexcept {
 
     for (auto& slot : slots_) {
         if (device_ != VK_NULL_HANDLE &&
+            destroy_buffer_ != nullptr &&
+            slot.motion_validation_buffer != VK_NULL_HANDLE) {
+            destroy_buffer_(
+                device_,
+                slot.motion_validation_buffer,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
+            free_memory_ != nullptr &&
+            slot.motion_validation_memory != VK_NULL_HANDLE) {
+            free_memory_(
+                device_,
+                slot.motion_validation_memory,
+                nullptr);
+        }
+
+        if (device_ != VK_NULL_HANDLE &&
             destroy_image_view_ != nullptr &&
             slot.sharpened_output_view != VK_NULL_HANDLE) {
             destroy_image_view_(
@@ -2437,6 +2455,7 @@ void VulkanPassthroughPipeline::destroy() noexcept {
     sharpening_strength_ = 0.0F;
     timestamp_period_ns_ = 0.0F;
     timestamp_valid_bits_ = 0;
+    motion_validation_enabled_ = false;
 }
 
 } // namespace ofg::vulkan
