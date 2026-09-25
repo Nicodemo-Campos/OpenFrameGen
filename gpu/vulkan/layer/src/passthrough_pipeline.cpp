@@ -1436,6 +1436,21 @@ std::uint64_t VulkanPassthroughPipeline::history_frame_count() const noexcept {
     return history_frame_count_;
 }
 
+bool VulkanPassthroughPipeline::motion_estimation_enabled() const noexcept {
+    return motion_pipeline_ != VK_NULL_HANDLE &&
+           motion_pipeline_layout_ != VK_NULL_HANDLE &&
+           motion_descriptor_set_layout_ != VK_NULL_HANDLE;
+}
+
+bool VulkanPassthroughPipeline::motion_field_ready() const noexcept {
+    return motion_estimation_enabled() &&
+           history_frame_count_ >= 2;
+}
+
+VkExtent2D VulkanPassthroughPipeline::motion_field_extent() const noexcept {
+    return motion_extent_;
+}
+
 void VulkanPassthroughPipeline::commit_frame_history() noexcept {
     if (!ready_ ||
         history_write_index_ >= history_.size() ||
@@ -1443,7 +1458,16 @@ void VulkanPassthroughPipeline::commit_frame_history() noexcept {
         return;
     }
 
+    const bool recorded_motion =
+        history_frame_count_ >= 1 &&
+        history_write_index_ < motion_fields_.size();
+
     history_[history_write_index_].initialized = true;
+
+    if (recorded_motion) {
+        motion_fields_[history_write_index_].initialized = true;
+    }
+
     ++history_frame_count_;
     history_write_index_ =
         (history_write_index_ + 1u) %
