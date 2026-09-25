@@ -376,6 +376,7 @@ template <typename Dispatchable>
 
     VkFormatProperties source_properties{};
     VkFormatProperties output_properties{};
+    VkFormatProperties motion_properties{};
 
     instance_dispatch.get_physical_device_format_properties(
         dispatch.physical_device,
@@ -386,6 +387,11 @@ template <typename Dispatchable>
         dispatch.physical_device,
         VK_FORMAT_R8G8B8A8_UNORM,
         &output_properties);
+
+    instance_dispatch.get_physical_device_format_properties(
+        dispatch.physical_device,
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        &motion_properties);
 
     VkFormatFeatureFlags required_source =
         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
@@ -409,7 +415,17 @@ template <typename Dispatchable>
         (output_properties.optimalTilingFeatures & required_output) ==
         required_output;
 
-    return source_supported && output_supported;
+    constexpr VkFormatFeatureFlags required_motion =
+        VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+
+    const bool motion_supported =
+        (motion_properties.optimalTilingFeatures & required_motion) ==
+        required_motion;
+
+    return source_supported &&
+           output_supported &&
+           motion_supported;
 }
 
 [[nodiscard]] std::uint32_t find_memory_type(
