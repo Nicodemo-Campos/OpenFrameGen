@@ -895,6 +895,9 @@ void retire_swapchain_copy_resources(
     if (enable_passthrough) {
         owned_image_usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
     }
+    if (enable_2x_resources) {
+        owned_image_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    }
 
     for (std::size_t index = 0;
          index < state.copy_slots.size();
