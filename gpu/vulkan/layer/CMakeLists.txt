@@ -56,6 +56,7 @@ if(OFG_GLSLC_EXECUTABLE)
             "${CMAKE_COMMAND}"
             "-DINPUT=${OFG_PASSTHROUGH_SPV}"
             "-DOUTPUT=${OFG_PASSTHROUGH_HEADER}"
+            "-DSYMBOL=Passthrough"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
         DEPENDS
             "${OFG_PASSTHROUGH_SPV}"
@@ -81,6 +82,7 @@ if(OFG_GLSLC_EXECUTABLE)
             "${CMAKE_COMMAND}"
             "-DINPUT=${OFG_SHARPEN_SPV}"
             "-DOUTPUT=${OFG_SHARPEN_HEADER}"
+            "-DSYMBOL=Sharpen"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
         DEPENDS
             "${OFG_SHARPEN_SPV}"
