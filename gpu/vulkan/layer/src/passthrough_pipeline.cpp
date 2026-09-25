@@ -84,6 +84,11 @@ bool VulkanPassthroughPipeline::load_functions(
     OFG_LOAD(vkDestroyShaderModule, destroy_shader_module_);
     OFG_LOAD(vkCreateComputePipelines, create_compute_pipelines_);
     OFG_LOAD(vkDestroyPipeline, destroy_pipeline_);
+    OFG_LOAD(vkCreateQueryPool, create_query_pool_);
+    OFG_LOAD(vkDestroyQueryPool, destroy_query_pool_);
+    OFG_LOAD(vkGetQueryPoolResults, get_query_pool_results_);
+    OFG_LOAD(vkCmdResetQueryPool, cmd_reset_query_pool_);
+    OFG_LOAD(vkCmdWriteTimestamp, cmd_write_timestamp_);
     OFG_LOAD(vkCmdPipelineBarrier, cmd_pipeline_barrier_);
     OFG_LOAD(vkCmdBindPipeline, cmd_bind_pipeline_);
     OFG_LOAD(vkCmdBindDescriptorSets, cmd_bind_descriptor_sets_);
@@ -155,6 +160,8 @@ bool VulkanPassthroughPipeline::initialize(
     VkFormat source_format,
     ScaleFilter filter,
     float sharpening_strength,
+    float timestamp_period_ns,
+    std::uint32_t timestamp_valid_bits,
     const std::vector<VkImage>& source_images) noexcept {
     destroy();
 
@@ -167,6 +174,8 @@ bool VulkanPassthroughPipeline::initialize(
     (void)source_format;
     (void)filter;
     (void)sharpening_strength;
+    (void)timestamp_period_ns;
+    (void)timestamp_valid_bits;
     (void)source_images;
     return false;
 #else
@@ -187,6 +196,8 @@ bool VulkanPassthroughPipeline::initialize(
     source_format_ = source_format;
     filter_ = filter;
     sharpening_strength_ = sharpening_strength;
+    timestamp_period_ns_ = timestamp_period_ns;
+    timestamp_valid_bits_ = timestamp_valid_bits;
 
     if (!load_functions(get_device_proc_addr)) {
         destroy();
