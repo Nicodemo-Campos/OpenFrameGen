@@ -148,6 +148,8 @@ struct SwapchainState {
     std::uint64_t generated_same_image_count = 0;
     std::uint64_t generated_record_failure_count = 0;
     std::uint64_t generated_submit_failure_count = 0;
+    std::uint64_t generated_source_replay_count = 0;
+    std::uint64_t generated_source_drop_count = 0;
 
     bool interpolate_2x_requested = false;
     bool transfer_dst_enabled = false;
