@@ -9,6 +9,7 @@
 #endif
 
 #if OFG_VULKAN_PASSTHROUGH_ENABLED
+#include "bidirectional_warp_spv.hpp"
 #include "motion_estimation_spv.hpp"
 #include "passthrough_spv.hpp"
 #include "sharpen_spv.hpp"
