@@ -400,7 +400,9 @@ template <typename Dispatchable>
 
     constexpr VkFormatFeatureFlags required_output =
         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
-        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 
     const bool output_supported =
         (output_properties.optimalTilingFeatures & required_output) ==
