@@ -128,6 +128,7 @@ struct SwapchainState {
     bool first_copy_completed_logged = false;
     bool first_passthrough_logged = false;
     bool first_sharpen_logged = false;
+    bool first_history_logged = false;
     bool first_timing_logged = false;
     bool first_present_logged = false;
 };
@@ -399,7 +400,9 @@ template <typename Dispatchable>
 
     constexpr VkFormatFeatureFlags required_output =
         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
-        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 
     const bool output_supported =
         (output_properties.optimalTilingFeatures & required_output) ==
@@ -2003,6 +2006,30 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             log_message(
                                 "[OpenFrameGen] First Vulkan sharpening "
                                 "pass submitted.");
+                        }
+
+                        if (state->passthrough != nullptr &&
+                            state->passthrough->ready()) {
+                            state->passthrough->commit_frame_history();
+
+                            if (state->passthrough->frame_history_ready() &&
+                                !state->first_history_logged) {
+                                state->first_history_logged = true;
+
+                                const VkExtent2D history_extent =
+                                    state->passthrough->output_extent();
+
+                                char history_message[256]{};
+                                std::snprintf(
+                                    history_message,
+                                    sizeof(history_message),
+                                    "[OpenFrameGen] Vulkan frame history "
+                                    "ready: 2 GPU-resident frames at "
+                                    "%ux%u.",
+                                    history_extent.width,
+                                    history_extent.height);
+                                log_message(history_message);
+                            }
                         }
                     } else {
                         log_message(
