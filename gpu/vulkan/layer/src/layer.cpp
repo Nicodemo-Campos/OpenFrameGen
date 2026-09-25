@@ -2154,8 +2154,8 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                     warp_message,
                                     sizeof(warp_message),
                                     "[OpenFrameGen] First Vulkan "
-                                    "bidirectional midpoint warp ready: "
-                                    "%ux%u at t=0.500.",
+                                    "occlusion-aware bidirectional midpoint "
+                                    "warp ready: %ux%u at t=0.500.",
                                     interpolation_extent.width,
                                     interpolation_extent.height);
                                 log_message(warp_message);
