@@ -37,6 +37,8 @@ struct InstanceDispatch {
         get_physical_device_format_properties = nullptr;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties
         get_physical_device_queue_family_properties = nullptr;
+    PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+        get_physical_device_surface_capabilities = nullptr;
 };
 
 struct DeviceDispatch {
@@ -1319,6 +1321,11 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
                 next_gipa(
                     *instance,
                     "vkGetPhysicalDeviceQueueFamilyProperties")),
+        .get_physical_device_surface_capabilities =
+            reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>(
+                next_gipa(
+                    *instance,
+                    "vkGetPhysicalDeviceSurfaceCapabilitiesKHR")),
     };
 
     {
