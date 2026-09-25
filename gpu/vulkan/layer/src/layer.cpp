@@ -1769,7 +1769,9 @@ void retire_swapchain_copy_resources(
     const DeviceDispatch& dispatch,
     const SwapchainState& state,
     std::uint32_t image_index,
-    CopySlot& slot) {
+    CopySlot& slot,
+    bool& source_contains_generated) {
+    source_contains_generated = false;
     if (dispatch.reset_command_buffer == nullptr ||
         dispatch.begin_command_buffer == nullptr ||
         dispatch.end_command_buffer == nullptr ||
@@ -1912,11 +1914,36 @@ void retire_swapchain_copy_resources(
         &restore_source);
 
     if (state.passthrough != nullptr &&
-        state.passthrough->ready() &&
-        !state.passthrough->record(
-            slot.command_buffer,
-            image_index)) {
-        return false;
+        state.passthrough->ready()) {
+        if (!state.passthrough->record(
+                slot.command_buffer,
+                image_index)) {
+            return false;
+        }
+
+        const bool double_buffered_2x =
+            state.interpolate_2x_requested &&
+            state.transfer_dst_enabled &&
+            state.present_mode == VK_PRESENT_MODE_FIFO_KHR &&
+            state.images.size() == 2 &&
+            dispatch.cmd_blit_image != nullptr;
+
+        if (double_buffered_2x) {
+            const VkImage generated_image =
+                state.passthrough->pending_interpolated_image();
+
+            if (generated_image != VK_NULL_HANDLE) {
+                source_contains_generated =
+                    record_generated_blit(
+                        dispatch,
+                        slot.command_buffer,
+                        generated_image,
+                        state.passthrough->output_extent(),
+                        state.images[image_index],
+                        state.extent,
+                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+            }
+        }
     }
 
     return dispatch.end_command_buffer(
