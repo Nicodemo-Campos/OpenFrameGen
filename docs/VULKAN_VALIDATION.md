@@ -98,6 +98,45 @@ Particular areas to inspect include:
 - queue-family and queue-handle assumptions;
 - object destruction while work is still pending.
 
+
+
+## Motion-estimation semantic validation
+
+Set `OFG_MOTION_VALIDATE=1` to replace the motion shader's image samples
+with a deterministic synthetic pattern whose known motion is
+`(+3, -2)` pixels. The normal Vulkan dispatch, motion-field image, barriers
+and descriptor path are still used. OFG copies one interior motion-field
+sample to a host-visible validation buffer after the dispatch and compares
+the measured vector against the known displacement.
+
+On Windows PowerShell:
+
+```powershell
+$env:OFG_MOTION_VALIDATE = "1"
+
+Remove-Item .\ofg-layer.log -ErrorAction SilentlyContinue
+Remove-Item .\vulkan-validation.log -ErrorAction SilentlyContinue
+
+Start-Process vkcube -PassThru -RedirectStandardError .\vulkan-validation.log
+```
+
+After a few seconds, close `vkcube` and inspect:
+
+```powershell
+Select-String .\ofg-layer.log -Pattern "Motion validation|motion-validation|motion estimation"
+Select-String .\vulkan-validation.log -Pattern "VUID|SYNC-HAZARD|ERROR|WARNING|Validation Error"
+```
+
+A successful semantic check should contain a line similar to:
+
+```text
+[OpenFrameGen] Motion validation PASS: expected=(3,-2), measured=(3.000,-2.000), mean-error=0.000000, valid=1.0.
+```
+
+This mode is a development test and does not measure real application
+motion while it is enabled. Remove `OFG_MOTION_VALIDATE` before normal
+motion-estimation testing.
+
 ## Cleanup
 
 ```powershell
@@ -108,6 +147,7 @@ Remove-Item Env:VK_VALIDATION_VALIDATE_SYNC -ErrorAction SilentlyContinue
 Remove-Item Env:VK_VALIDATION_THREAD_SAFETY -ErrorAction SilentlyContinue
 Remove-Item Env:VK_VALIDATION_REPORT_FLAGS -ErrorAction SilentlyContinue
 Remove-Item Env:OFG_LOG_FILE -ErrorAction SilentlyContinue
+Remove-Item Env:OFG_MOTION_VALIDATE -ErrorAction SilentlyContinue
 ```
 
 Do not run development layers against anti-cheat protected online games.
