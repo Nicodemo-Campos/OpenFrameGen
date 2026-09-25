@@ -1551,6 +1551,203 @@ void retire_swapchain_copy_resources(
                slot.command_buffer) == VK_SUCCESS;
 }
 
+[[nodiscard]] bool try_present_2x_pair(
+    const DeviceDispatch& dispatch,
+    VkQueue queue,
+    const VkPresentInfoKHR* original_present,
+    SwapchainState& state,
+    std::uint32_t source_index,
+    VkSemaphore copy_complete,
+    bool cadence_plan_ready,
+    VkResult& present_result) {
+    if (!state.interpolate_2x_requested ||
+        !state.transfer_dst_enabled ||
+        state.present_mode != VK_PRESENT_MODE_FIFO_KHR ||
+        !cadence_plan_ready ||
+        state.passthrough == nullptr ||
+        !state.passthrough->interpolated_frame_ready() ||
+        state.synthetic_command_buffer == VK_NULL_HANDLE ||
+        state.synthetic_acquire == VK_NULL_HANDLE ||
+        state.synthetic_fence == VK_NULL_HANDLE ||
+        dispatch.acquire_next_image == nullptr ||
+        dispatch.queue_submit == nullptr ||
+        dispatch.queue_present == nullptr ||
+        dispatch.wait_for_fences == nullptr ||
+        dispatch.reset_fences == nullptr ||
+        source_index >= state.copy_slots.size() ||
+        original_present == nullptr ||
+        original_present->pSwapchains == nullptr) {
+        return false;
+    }
+
+    if (state.synthetic_submission_pending) {
+        const VkResult wait_result =
+            dispatch.wait_for_fences(
+                dispatch.device,
+                1,
+                &state.synthetic_fence,
+                VK_TRUE,
+                UINT64_MAX);
+
+        if (wait_result != VK_SUCCESS) {
+            return false;
+        }
+
+        state.synthetic_submission_pending = false;
+    }
+
+    std::uint32_t generated_index = UINT32_MAX;
+    const VkSwapchainKHR swapchain =
+        original_present->pSwapchains[0];
+
+    const VkResult acquire_result =
+        dispatch.acquire_next_image(
+            dispatch.device,
+            swapchain,
+            0,
+            state.synthetic_acquire,
+            VK_NULL_HANDLE,
+            &generated_index);
+
+    if (acquire_result != VK_SUCCESS &&
+        acquire_result != VK_SUBOPTIMAL_KHR) {
+        return false;
+    }
+
+    auto release_acquired_image = [&]() noexcept {
+        VkResult release_result = VK_SUCCESS;
+        const VkPresentInfoKHR release_present{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext = nullptr,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &state.synthetic_acquire,
+            .swapchainCount = 1,
+            .pSwapchains = &swapchain,
+            .pImageIndices = &generated_index,
+            .pResults = &release_result,
+        };
+
+        dispatch.queue_present(
+            queue,
+            &release_present);
+    };
+
+    if (generated_index >= state.copy_slots.size() ||
+        generated_index >= state.images.size() ||
+        generated_index == source_index) {
+        release_acquired_image();
+        return false;
+    }
+
+    auto& source_slot = state.copy_slots[source_index];
+    auto& generated_slot = state.copy_slots[generated_index];
+
+    generated_slot.generated_used_for_present = false;
+    generated_slot.source_used_for_present = false;
+    generated_slot.used_for_present = false;
+
+    if (generated_slot.generated_present_ready == VK_NULL_HANDLE ||
+        source_slot.source_present_ready == VK_NULL_HANDLE ||
+        !record_generated_present_commands(
+            dispatch,
+            state,
+            generated_index) ||
+        dispatch.reset_fences(
+            dispatch.device,
+            1,
+            &state.synthetic_fence) != VK_SUCCESS) {
+        release_acquired_image();
+        return false;
+    }
+
+    const std::array<VkSemaphore, 2> wait_semaphores{
+        copy_complete,
+        state.synthetic_acquire,
+    };
+    const std::array<VkPipelineStageFlags, 2> wait_stages{
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+    };
+    const std::array<VkSemaphore, 2> signal_semaphores{
+        generated_slot.generated_present_ready,
+        source_slot.source_present_ready,
+    };
+
+    const VkSubmitInfo submit_info{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = nullptr,
+        .waitSemaphoreCount =
+            static_cast<std::uint32_t>(wait_semaphores.size()),
+        .pWaitSemaphores = wait_semaphores.data(),
+        .pWaitDstStageMask = wait_stages.data(),
+        .commandBufferCount = 1,
+        .pCommandBuffers = &state.synthetic_command_buffer,
+        .signalSemaphoreCount =
+            static_cast<std::uint32_t>(signal_semaphores.size()),
+        .pSignalSemaphores = signal_semaphores.data(),
+    };
+
+    if (dispatch.queue_submit(
+            queue,
+            1,
+            &submit_info,
+            state.synthetic_fence) != VK_SUCCESS) {
+        release_acquired_image();
+        return false;
+    }
+
+    state.synthetic_submission_pending = true;
+    source_slot.used_for_present = false;
+    generated_slot.generated_used_for_present = true;
+    source_slot.source_used_for_present = true;
+
+    VkResult generated_present_result = VK_SUCCESS;
+    const VkSemaphore generated_ready =
+        generated_slot.generated_present_ready;
+    const VkPresentInfoKHR generated_present{
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = nullptr,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &generated_ready,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &generated_index,
+        .pResults = &generated_present_result,
+    };
+
+    dispatch.queue_present(
+        queue,
+        &generated_present);
+
+    const VkSemaphore source_ready =
+        source_slot.source_present_ready;
+    VkPresentInfoKHR source_present =
+        *original_present;
+    source_present.waitSemaphoreCount = 1;
+    source_present.pWaitSemaphores = &source_ready;
+
+    present_result =
+        dispatch.queue_present(
+            queue,
+            &source_present);
+
+    if (!state.first_2x_present_logged) {
+        state.first_2x_present_logged = true;
+
+        char message[320]{};
+        std::snprintf(
+            message,
+            sizeof(message),
+            "[OpenFrameGen] First real 2x FIFO pair queued: "
+            "generated image=%u before source image=%u.",
+            generated_index,
+            source_index);
+        log_message(message);
+    }
+
+    return true;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
     const VkInstanceCreateInfo* create_info,
     const VkAllocationCallbacks* allocator,
