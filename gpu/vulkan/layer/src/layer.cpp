@@ -26,6 +26,8 @@ struct InstanceDispatch {
     PFN_vkDestroyInstance destroy_instance = nullptr;
     PFN_vkGetPhysicalDeviceMemoryProperties
         get_physical_device_memory_properties = nullptr;
+    PFN_vkGetPhysicalDeviceProperties
+        get_physical_device_properties = nullptr;
     PFN_vkGetPhysicalDeviceFormatProperties
         get_physical_device_format_properties = nullptr;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties
@@ -36,6 +38,7 @@ struct DeviceDispatch {
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties memory_properties{};
+    float timestamp_period_ns = 0.0F;
 
     PFN_vkGetDeviceProcAddr get_device_proc_addr = nullptr;
     PFN_vkDestroyDevice destroy_device = nullptr;
@@ -84,6 +87,7 @@ struct QueueState {
     std::uint32_t queue_index = 0;
     VkDeviceQueueCreateFlags flags = 0;
     VkQueueFlags capabilities = 0;
+    std::uint32_t timestamp_valid_bits = 0;
 };
 
 struct CopySlot {
@@ -123,6 +127,7 @@ struct SwapchainState {
     bool first_copy_completed_logged = false;
     bool first_passthrough_logged = false;
     bool first_sharpen_logged = false;
+    bool first_timing_logged = false;
     bool first_present_logged = false;
 };
 
@@ -1184,6 +1189,11 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateInstance(
                 next_gipa(
                     *instance,
                     "vkGetPhysicalDeviceMemoryProperties")),
+        .get_physical_device_properties =
+            reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+                next_gipa(
+                    *instance,
+                    "vkGetPhysicalDeviceProperties")),
         .get_physical_device_format_properties =
             reinterpret_cast<PFN_vkGetPhysicalDeviceFormatProperties>(
                 next_gipa(
@@ -1298,6 +1308,15 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateDevice(
         instance_dispatch.get_physical_device_memory_properties(
             physical_device,
             &dispatch.memory_properties);
+    }
+
+    if (instance_dispatch.get_physical_device_properties != nullptr) {
+        VkPhysicalDeviceProperties properties{};
+        instance_dispatch.get_physical_device_properties(
+            physical_device,
+            &properties);
+        dispatch.timestamp_period_ns =
+            properties.limits.timestampPeriod;
     }
 
 #define OFG_LOAD_DEVICE(name, field) \
