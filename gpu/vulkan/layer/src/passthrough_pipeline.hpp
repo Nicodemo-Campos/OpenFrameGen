@@ -31,8 +31,8 @@ struct MotionValidationSample {
 };
 
 struct WarpValidationSample {
-    std::uint32_t midpoint_rgba8 = 0;
-    std::uint32_t occlusion_rgba8 = 0;
+    std::array<std::uint8_t, 4> midpoint_rgba8{};
+    std::array<std::uint8_t, 4> occlusion_rgba8{};
 };
 
 class VulkanPassthroughPipeline {
