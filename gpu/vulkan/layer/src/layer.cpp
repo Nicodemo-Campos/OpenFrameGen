@@ -1532,7 +1532,8 @@ void retire_swapchain_copy_resources(
 
     dispatch.cmd_pipeline_barrier(
         state.synthetic_command_buffer,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         0,
         0,
