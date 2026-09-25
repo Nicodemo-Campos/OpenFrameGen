@@ -881,6 +881,8 @@ void retire_swapchain_copy_resources(
                 state.format,
                 scale_filter,
                 sharpening_strength,
+                dispatch.timestamp_period_ns,
+                queue_state.timestamp_valid_bits,
                 source_images)) {
             state.passthrough = std::move(passthrough);
 
@@ -890,7 +892,7 @@ void retire_swapchain_copy_resources(
                 sizeof(compute_message),
                 "[OpenFrameGen] Vulkan %s scaler ready: "
                 "%ux%u -> %ux%u, scale=%.3f, sharpen=%.3f, "
-                "images=%zu, local size=8x8.",
+                "images=%zu, local size=8x8, timing=%s.",
                 scale_filter_name(scale_filter),
                 state.extent.width,
                 state.extent.height,
@@ -898,7 +900,8 @@ void retire_swapchain_copy_resources(
                 output_extent.height,
                 static_cast<double>(scale_factor),
                 static_cast<double>(sharpening_strength),
-                state.copy_slots.size());
+                state.copy_slots.size(),
+                state.passthrough->timing_enabled() ? "on" : "off");
             log_message(compute_message);
         } else {
             log_message(
@@ -1891,6 +1894,32 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                     log_message(
                         "[OpenFrameGen] First GPU frame copy "
                         "completed.");
+                }
+
+                if (wait_result == VK_SUCCESS &&
+                    slot.has_submission &&
+                    state->passthrough != nullptr &&
+                    state->passthrough->timing_enabled()) {
+                    ofg::vulkan::GpuTimingSample timing{};
+
+                    if (state->passthrough->read_timing(
+                            image_index,
+                            timing) &&
+                        !state->first_timing_logged) {
+                        state->first_timing_logged = true;
+
+                        char timing_message[256]{};
+                        std::snprintf(
+                            timing_message,
+                            sizeof(timing_message),
+                            "[OpenFrameGen] GPU timing: "
+                            "scaler=%.3f ms, sharpen=%.3f ms, "
+                            "total=%.3f ms.",
+                            timing.scaler_ms,
+                            timing.sharpening_ms,
+                            timing.total_ms);
+                        log_message(timing_message);
+                    }
                 }
 
                 if (wait_result == VK_SUCCESS) {
