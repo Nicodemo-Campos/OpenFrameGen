@@ -598,6 +598,133 @@ bool VulkanPassthroughPipeline::initialize(
         return false;
     }
 
+    const std::array<VkDescriptorSetLayoutBinding, 4>
+        warp_bindings{
+            VkDescriptorSetLayoutBinding{
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                .pImmutableSamplers = nullptr,
+            },
+            VkDescriptorSetLayoutBinding{
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                .pImmutableSamplers = nullptr,
+            },
+            VkDescriptorSetLayoutBinding{
+                .binding = 2,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                .pImmutableSamplers = nullptr,
+            },
+            VkDescriptorSetLayoutBinding{
+                .binding = 3,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                .pImmutableSamplers = nullptr,
+            },
+        };
+
+    const VkDescriptorSetLayoutCreateInfo warp_set_layout_info{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .bindingCount =
+            static_cast<std::uint32_t>(warp_bindings.size()),
+        .pBindings = warp_bindings.data(),
+    };
+
+    if (create_descriptor_set_layout_(
+            device_,
+            &warp_set_layout_info,
+            nullptr,
+            &warp_descriptor_set_layout_) != VK_SUCCESS) {
+        destroy();
+        return false;
+    }
+
+    const VkPipelineLayoutCreateInfo warp_pipeline_layout_info{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .setLayoutCount = 1,
+        .pSetLayouts = &warp_descriptor_set_layout_,
+        .pushConstantRangeCount = 0,
+        .pPushConstantRanges = nullptr,
+    };
+
+    if (create_pipeline_layout_(
+            device_,
+            &warp_pipeline_layout_info,
+            nullptr,
+            &warp_pipeline_layout_) != VK_SUCCESS) {
+        destroy();
+        return false;
+    }
+
+    const VkShaderModuleCreateInfo warp_shader_info{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .codeSize = generated::kBidirectionalWarpSpirvSize,
+        .pCode = reinterpret_cast<const std::uint32_t*>(
+            generated::kBidirectionalWarpSpirv),
+    };
+
+    VkShaderModule warp_shader_module = VK_NULL_HANDLE;
+    if (create_shader_module_(
+            device_,
+            &warp_shader_info,
+            nullptr,
+            &warp_shader_module) != VK_SUCCESS) {
+        destroy();
+        return false;
+    }
+
+    const VkPipelineShaderStageCreateInfo warp_stage_info{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+        .module = warp_shader_module,
+        .pName = "main",
+        .pSpecializationInfo = nullptr,
+    };
+
+    const VkComputePipelineCreateInfo warp_pipeline_info{
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .stage = warp_stage_info,
+        .layout = warp_pipeline_layout_,
+        .basePipelineHandle = VK_NULL_HANDLE,
+        .basePipelineIndex = -1,
+    };
+
+    const VkResult warp_pipeline_result =
+        create_compute_pipelines_(
+            device_,
+            VK_NULL_HANDLE,
+            1,
+            &warp_pipeline_info,
+            nullptr,
+            &warp_pipeline_);
+
+    destroy_shader_module_(
+        device_,
+        warp_shader_module,
+        nullptr);
+
+    if (warp_pipeline_result != VK_SUCCESS) {
+        destroy();
+        return false;
+    }
+
     motion_extent_ = VkExtent2D{
         (output_extent_.width + kMotionBlockSize - 1u) /
             kMotionBlockSize,
@@ -643,12 +770,12 @@ bool VulkanPassthroughPipeline::initialize(
         VkDescriptorPoolSize{
             .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount =
-                slot_count * descriptor_multiplier + 4u,
+                slot_count * descriptor_multiplier + 10u,
         },
         VkDescriptorPoolSize{
             .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             .descriptorCount =
-                slot_count * descriptor_multiplier + 2u,
+                slot_count * descriptor_multiplier + 4u,
         },
     };
 
@@ -656,7 +783,7 @@ bool VulkanPassthroughPipeline::initialize(
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .maxSets = slot_count * descriptor_multiplier + 2u,
+        .maxSets = slot_count * descriptor_multiplier + 4u,
         .poolSizeCount = static_cast<std::uint32_t>(pool_sizes.size()),
         .pPoolSizes = pool_sizes.data(),
     };
