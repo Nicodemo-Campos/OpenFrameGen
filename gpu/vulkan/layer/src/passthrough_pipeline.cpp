@@ -896,6 +896,86 @@ float VulkanPassthroughPipeline::sharpening_strength() const noexcept {
     return sharpening_strength_;
 }
 
+bool VulkanPassthroughPipeline::timing_enabled() const noexcept {
+    return timing_query_pool_ != VK_NULL_HANDLE &&
+           get_query_pool_results_ != nullptr &&
+           cmd_reset_query_pool_ != nullptr &&
+           cmd_write_timestamp_ != nullptr &&
+           timestamp_period_ns_ > 0.0F &&
+           timestamp_valid_bits_ > 0;
+}
+
+bool VulkanPassthroughPipeline::read_timing(
+    std::uint32_t slot_index,
+    GpuTimingSample& sample) const noexcept {
+    sample = {};
+
+    if (!timing_enabled() ||
+        slot_index >= slots_.size()) {
+        return false;
+    }
+
+    std::array<std::uint64_t, kTimingQueriesPerSlot> timestamps{};
+    const std::uint32_t first_query =
+        slot_index * kTimingQueriesPerSlot;
+
+    const VkResult result =
+        get_query_pool_results_(
+            device_,
+            timing_query_pool_,
+            first_query,
+            kTimingQueriesPerSlot,
+            sizeof(timestamps),
+            timestamps.data(),
+            sizeof(std::uint64_t),
+            VK_QUERY_RESULT_64_BIT);
+
+    if (result != VK_SUCCESS) {
+        return false;
+    }
+
+    const auto tick_delta =
+        [this](std::uint64_t begin, std::uint64_t end) noexcept {
+            if (timestamp_valid_bits_ >= 64) {
+                return end - begin;
+            }
+
+            const std::uint64_t mask =
+                (std::uint64_t{1} << timestamp_valid_bits_) - 1;
+            return (end - begin) & mask;
+        };
+
+    const std::uint64_t scaler_ticks =
+        tick_delta(timestamps[0], timestamps[1]);
+    const std::uint64_t sharpen_ticks =
+        sharpening_enabled()
+            ? tick_delta(timestamps[1], timestamps[2])
+            : 0;
+    const std::uint64_t total_ticks =
+        sharpening_enabled()
+            ? tick_delta(timestamps[0], timestamps[2])
+            : scaler_ticks;
+
+    constexpr double nanoseconds_per_millisecond = 1'000'000.0;
+    const double period =
+        static_cast<double>(timestamp_period_ns_);
+
+    sample.scaler_ms =
+        static_cast<double>(scaler_ticks) *
+        period /
+        nanoseconds_per_millisecond;
+    sample.sharpening_ms =
+        static_cast<double>(sharpen_ticks) *
+        period /
+        nanoseconds_per_millisecond;
+    sample.total_ms =
+        static_cast<double>(total_ticks) *
+        period /
+        nanoseconds_per_millisecond;
+
+    return true;
+}
+
 VkExtent2D VulkanPassthroughPipeline::output_extent() const noexcept {
     return output_extent_;
 }
@@ -910,6 +990,18 @@ bool VulkanPassthroughPipeline::record(
     }
 
     const auto& slot = slots_[slot_index];
+
+    const bool record_timing = timing_enabled();
+    const std::uint32_t first_timing_query =
+        slot_index * kTimingQueriesPerSlot;
+
+    if (record_timing) {
+        cmd_reset_query_pool_(
+            command_buffer,
+            timing_query_pool_,
+            first_timing_query,
+            kTimingQueriesPerSlot);
+    }
 
     std::array<VkImageMemoryBarrier, 2> barriers{
         VkImageMemoryBarrier{
@@ -964,6 +1056,14 @@ bool VulkanPassthroughPipeline::record(
         static_cast<std::uint32_t>(barriers.size()),
         barriers.data());
 
+    if (record_timing) {
+        cmd_write_timestamp_(
+            command_buffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            timing_query_pool_,
+            first_timing_query);
+    }
+
     cmd_bind_pipeline_(
         command_buffer,
         VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -989,6 +1089,14 @@ bool VulkanPassthroughPipeline::record(
         group_count_x,
         group_count_y,
         1);
+
+    if (record_timing) {
+        cmd_write_timestamp_(
+            command_buffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            timing_query_pool_,
+            first_timing_query + 1);
+    }
 
     if (sharpening_enabled()) {
         std::array<VkImageMemoryBarrier, 2> sharpen_barriers{
@@ -1062,6 +1170,14 @@ bool VulkanPassthroughPipeline::record(
             group_count_x,
             group_count_y,
             1);
+    }
+
+    if (record_timing) {
+        cmd_write_timestamp_(
+            command_buffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            timing_query_pool_,
+            first_timing_query + 2);
     }
 
     return true;
