@@ -7,11 +7,17 @@ layout(set = 0, binding = 1, rgba8) writeonly uniform image2D output_image;
 
 void main() {
     const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    const ivec2 extent = textureSize(source_image, 0);
+    const ivec2 output_extent = imageSize(output_image);
 
-    if (pixel.x >= extent.x || pixel.y >= extent.y) {
+    if (pixel.x >= output_extent.x || pixel.y >= output_extent.y) {
         return;
     }
 
-    imageStore(output_image, pixel, texelFetch(source_image, pixel, 0));
+    const vec2 uv =
+        (vec2(pixel) + vec2(0.5)) / vec2(output_extent);
+
+    imageStore(
+        output_image,
+        pixel,
+        textureLod(source_image, uv, 0.0));
 }
