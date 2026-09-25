@@ -130,6 +130,7 @@ struct SwapchainState {
     bool first_sharpen_logged = false;
     bool first_history_logged = false;
     bool first_motion_logged = false;
+    bool first_warp_logged = false;
     bool first_motion_validation_logged = false;
     bool first_timing_logged = false;
     bool first_present_logged = false;
@@ -2139,6 +2140,25 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                                     motion_extent.width,
                                     motion_extent.height);
                                 log_message(motion_message);
+                            }
+
+                            if (state->passthrough->interpolated_frame_ready() &&
+                                !state->first_warp_logged) {
+                                state->first_warp_logged = true;
+
+                                const VkExtent2D interpolation_extent =
+                                    state->passthrough->output_extent();
+
+                                char warp_message[256]{};
+                                std::snprintf(
+                                    warp_message,
+                                    sizeof(warp_message),
+                                    "[OpenFrameGen] First Vulkan "
+                                    "bidirectional midpoint warp ready: "
+                                    "%ux%u at t=0.500.",
+                                    interpolation_extent.width,
+                                    interpolation_extent.height);
+                                log_message(warp_message);
                             }
                         }
                     } else {
