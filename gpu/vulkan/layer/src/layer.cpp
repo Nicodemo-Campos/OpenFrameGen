@@ -8,6 +8,7 @@
 #include "passthrough_pipeline.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -2119,18 +2120,30 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                             "occlusion=(%u,%u,%u,%u) "
                             "expected=(0,0,255,255).",
                             passed ? "PASS" : "FAIL",
-                            validation.midpoint_rgba8[0],
-                            validation.midpoint_rgba8[1],
-                            validation.midpoint_rgba8[2],
-                            validation.midpoint_rgba8[3],
-                            expected_midpoint[0],
-                            expected_midpoint[1],
-                            expected_midpoint[2],
-                            expected_midpoint[3],
-                            validation.occlusion_rgba8[0],
-                            validation.occlusion_rgba8[1],
-                            validation.occlusion_rgba8[2],
-                            validation.occlusion_rgba8[3]);
+                            static_cast<unsigned int>(
+                                validation.midpoint_rgba8[0]),
+                            static_cast<unsigned int>(
+                                validation.midpoint_rgba8[1]),
+                            static_cast<unsigned int>(
+                                validation.midpoint_rgba8[2]),
+                            static_cast<unsigned int>(
+                                validation.midpoint_rgba8[3]),
+                            static_cast<unsigned int>(
+                                expected_midpoint[0]),
+                            static_cast<unsigned int>(
+                                expected_midpoint[1]),
+                            static_cast<unsigned int>(
+                                expected_midpoint[2]),
+                            static_cast<unsigned int>(
+                                expected_midpoint[3]),
+                            static_cast<unsigned int>(
+                                validation.occlusion_rgba8[0]),
+                            static_cast<unsigned int>(
+                                validation.occlusion_rgba8[1]),
+                            static_cast<unsigned int>(
+                                validation.occlusion_rgba8[2]),
+                            static_cast<unsigned int>(
+                                validation.occlusion_rgba8[3]));
                         log_message(validation_message);
                     }
                 }
