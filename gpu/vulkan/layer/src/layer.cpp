@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -291,6 +292,7 @@ template <typename Dispatchable>
     if (end == value ||
         end == nullptr ||
         *end != '\0' ||
+        !std::isfinite(scale) ||
         scale < 0.25F ||
         scale > 2.0F) {
         return 1.0F;
@@ -311,6 +313,7 @@ template <typename Dispatchable>
     if (end == value ||
         end == nullptr ||
         *end != '\0' ||
+        !std::isfinite(strength) ||
         strength < 0.0F ||
         strength > 1.0F) {
         return 0.0F;
