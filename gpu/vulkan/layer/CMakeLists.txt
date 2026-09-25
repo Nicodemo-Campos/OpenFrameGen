@@ -31,6 +31,12 @@ if(OFG_GLSLC_EXECUTABLE)
     set(OFG_PASSTHROUGH_HEADER
         "${OFG_GENERATED_SHADER_DIR}/passthrough_spv.hpp"
     )
+    set(OFG_SHARPEN_SPV
+        "${OFG_GENERATED_SHADER_DIR}/sharpen.comp.spv"
+    )
+    set(OFG_SHARPEN_HEADER
+        "${OFG_GENERATED_SHADER_DIR}/sharpen_spv.hpp"
+    )
 
     add_custom_command(
         OUTPUT "${OFG_PASSTHROUGH_SPV}"
@@ -57,10 +63,36 @@ if(OFG_GLSLC_EXECUTABLE)
         VERBATIM
     )
 
+    add_custom_command(
+        OUTPUT "${OFG_SHARPEN_SPV}"
+        COMMAND
+            "${OFG_GLSLC_EXECUTABLE}"
+            -fshader-stage=compute
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/sharpen.comp"
+            -o "${OFG_SHARPEN_SPV}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/sharpen.comp"
+        VERBATIM
+    )
+
+    add_custom_command(
+        OUTPUT "${OFG_SHARPEN_HEADER}"
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DINPUT=${OFG_SHARPEN_SPV}"
+            "-DOUTPUT=${OFG_SHARPEN_HEADER}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+        DEPENDS
+            "${OFG_SHARPEN_SPV}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+        VERBATIM
+    )
+
     target_sources(
         ofg_vulkan_layer
         PRIVATE
             "${OFG_PASSTHROUGH_HEADER}"
+            "${OFG_SHARPEN_HEADER}"
     )
 
     target_include_directories(
