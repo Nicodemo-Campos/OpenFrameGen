@@ -1,5 +1,6 @@
 add_library(ofg_core
     src/runtime.cpp
+    src/frame_cadence.cpp
 )
 
 add_library(OpenFrameGen::Core ALIAS ofg_core)
