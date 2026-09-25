@@ -837,6 +837,8 @@ void retire_swapchain_copy_resources(
     const VkExtent2D output_extent =
         scaled_extent(state.extent, scale_factor);
 
+    const bool blit_2x_supported =
+        supports_2x_blit(dispatch, state.format);
     const bool enable_2x_resources =
         state.interpolate_2x_requested &&
         state.transfer_dst_enabled &&
@@ -844,7 +846,7 @@ void retire_swapchain_copy_resources(
         state.images.size() >= 3 &&
         dispatch.acquire_next_image != nullptr &&
         dispatch.cmd_blit_image != nullptr &&
-        supports_2x_blit(dispatch, state.format);
+        blit_2x_supported;
 
     const bool enable_passthrough =
         ofg::vulkan::VulkanPassthroughPipeline::build_available() &&
@@ -1185,9 +1187,25 @@ void retire_swapchain_copy_resources(
                 "[OpenFrameGen] Vulkan 2x presentation path armed: "
                 "FIFO swapchain, transfer-dst and blit supported.");
         } else {
-            log_message(
-                "[OpenFrameGen] Vulkan 2x presentation path unavailable; "
-                "continuing with normal presentation.");
+            char mode_message[512]{};
+            std::snprintf(
+                mode_message,
+                sizeof(mode_message),
+                "[OpenFrameGen] Vulkan 2x presentation path unavailable: "
+                "transfer-dst=%s, present=%s, images=%zu, acquire=%s, "
+                "blit-fn=%s, blit-format=%s, pipeline=%s; "
+                "continuing with normal presentation.",
+                state.transfer_dst_enabled ? "yes" : "no",
+                present_mode_name(state.present_mode),
+                state.images.size(),
+                dispatch.acquire_next_image != nullptr ? "yes" : "no",
+                dispatch.cmd_blit_image != nullptr ? "yes" : "no",
+                blit_2x_supported ? "yes" : "no",
+                state.passthrough != nullptr &&
+                        state.passthrough->ready()
+                    ? "yes"
+                    : "no");
+            log_message(mode_message);
         }
     }
 
@@ -2335,12 +2353,13 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         g_swapchains[*swapchain] = state;
     }
 
-    char message[512]{};
+    char message[560]{};
     std::snprintf(
         message,
         sizeof(message),
         "[OpenFrameGen] Swapchain #%llu created: %ux%u, "
-        "format=%s(%d), present=%s(%d), minImages=%u, usage=0x%08x.",
+        "format=%s(%d), present=%s(%d), minImages=%u, usage=0x%08x, "
+        "2x-requested=%s, transfer-dst=%s.",
         static_cast<unsigned long long>(state->generation),
         effective_create_info.imageExtent.width,
         effective_create_info.imageExtent.height,
@@ -2349,7 +2368,9 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgCreateSwapchainKHR(
         present_mode_name(effective_create_info.presentMode),
         static_cast<int>(effective_create_info.presentMode),
         effective_create_info.minImageCount,
-        static_cast<unsigned int>(effective_create_info.imageUsage));
+        static_cast<unsigned int>(effective_create_info.imageUsage),
+        state->interpolate_2x_requested ? "yes" : "no",
+        state->transfer_dst_enabled ? "yes" : "no");
     log_message(message);
 
     return VK_SUCCESS;
