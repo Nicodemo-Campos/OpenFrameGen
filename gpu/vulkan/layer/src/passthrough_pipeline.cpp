@@ -754,9 +754,7 @@ bool VulkanPassthroughPipeline::initialize(
             .usage =
                 VK_IMAGE_USAGE_STORAGE_BIT |
                 VK_IMAGE_USAGE_SAMPLED_BIT |
-                (motion_validation_enabled_
-                    ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT
-                    : 0),
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = nullptr,
@@ -1255,7 +1253,9 @@ bool VulkanPassthroughPipeline::initialize(
             .usage =
                 VK_IMAGE_USAGE_STORAGE_BIT |
                 VK_IMAGE_USAGE_SAMPLED_BIT |
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                (motion_validation_enabled_
+                    ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                    : 0),
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = nullptr,
