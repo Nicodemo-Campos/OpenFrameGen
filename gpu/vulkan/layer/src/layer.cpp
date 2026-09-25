@@ -139,6 +139,8 @@ struct SwapchainState {
     bool synthetic_submission_pending = false;
 
     std::uint64_t source_present_count = 0;
+    std::uint64_t source_present_first_ns = 0;
+    std::uint64_t source_present_last_ns = 0;
     std::uint64_t generated_present_count = 0;
     std::uint64_t generated_present_attempt_count = 0;
     std::uint64_t generated_acquire_miss_count = 0;
@@ -2977,6 +2979,8 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
     VkExtent2D extent{};
     std::uint32_t image_count = 0;
     std::uint64_t source_present_count = 0;
+    std::uint64_t source_present_first_ns = 0;
+    std::uint64_t source_present_last_ns = 0;
     std::uint64_t generated_present_count = 0;
     std::uint64_t generated_present_attempt_count = 0;
     std::uint64_t generated_acquire_miss_count = 0;
@@ -3055,6 +3059,8 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         extent = state->extent;
         image_count = state->image_count;
         source_present_count = state->source_present_count;
+        source_present_first_ns = state->source_present_first_ns;
+        source_present_last_ns = state->source_present_last_ns;
         generated_present_count = state->generated_present_count;
         generated_present_attempt_count =
             state->generated_present_attempt_count;
@@ -3144,6 +3150,46 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
                 static_cast<unsigned long long>(
                     generated_source_drop_count));
             log_message(stats_message);
+
+            if (source_present_count > 1 &&
+                source_present_last_ns > source_present_first_ns) {
+                const double active_seconds =
+                    static_cast<double>(
+                        source_present_last_ns -
+                        source_present_first_ns) /
+                    1'000'000'000.0;
+                const double source_rate =
+                    static_cast<double>(
+                        source_present_count - 1u) /
+                    active_seconds;
+                const double generated_rate =
+                    static_cast<double>(
+                        generated_present_count) /
+                    active_seconds;
+                const double queued_output_rate =
+                    static_cast<double>(
+                        (source_present_count - 1u) +
+                        generated_present_count) /
+                    active_seconds;
+                const double source_interval_ms =
+                    1000.0 / source_rate;
+
+                char pacing_message[420]{};
+                std::snprintf(
+                    pacing_message,
+                    sizeof(pacing_message),
+                    "[OpenFrameGen] Presentation pacing metrics: "
+                    "duration=%.3f s, source-rate=%.3f fps, "
+                    "source-interval=%.3f ms, generated-rate=%.3f fps, "
+                    "queued-output-rate=%.3f fps "
+                    "(queued rate is not measured display refresh).",
+                    active_seconds,
+                    source_rate,
+                    source_interval_ms,
+                    generated_rate,
+                    queued_output_rate);
+                log_message(pacing_message);
+            }
         }
     }
 }
@@ -3277,6 +3323,15 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count();
+
+    if (present_time > 0) {
+        const auto present_time_ns =
+            static_cast<std::uint64_t>(present_time);
+        if (state->source_present_first_ns == 0) {
+            state->source_present_first_ns = present_time_ns;
+        }
+        state->source_present_last_ns = present_time_ns;
+    }
 
     ofg::FrameCadence2xPlan cadence_plan{};
     const bool cadence_plan_ready =
