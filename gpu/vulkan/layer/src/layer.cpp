@@ -775,6 +775,15 @@ void retire_swapchain_copy_resources(
     const VkExtent2D output_extent =
         scaled_extent(state.extent, scale_factor);
 
+    const bool enable_2x_resources =
+        state.interpolate_2x_requested &&
+        state.transfer_dst_enabled &&
+        state.present_mode == VK_PRESENT_MODE_FIFO_KHR &&
+        state.images.size() >= 3 &&
+        dispatch.acquire_next_image != nullptr &&
+        dispatch.cmd_blit_image != nullptr &&
+        supports_2x_blit(dispatch, state.format);
+
     const bool enable_passthrough =
         ofg::vulkan::VulkanPassthroughPipeline::build_available() &&
         (queue_state.capabilities & VK_QUEUE_COMPUTE_BIT) != 0 &&
@@ -951,6 +960,25 @@ void retire_swapchain_copy_resources(
             return false;
         }
 
+        if (enable_2x_resources) {
+            if (dispatch.create_semaphore(
+                    dispatch.device,
+                    &semaphore_info,
+                    nullptr,
+                    &slot.generated_present_ready) != VK_SUCCESS ||
+                dispatch.create_semaphore(
+                    dispatch.device,
+                    &semaphore_info,
+                    nullptr,
+                    &slot.source_present_ready) != VK_SUCCESS) {
+                log_message(
+                    "[OpenFrameGen] 2x initialization failed while "
+                    "creating presentation semaphores.");
+                destroy_copy_resources(dispatch, state);
+                return false;
+            }
+        }
+
         const VkFenceCreateInfo fence_info{
             .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
             .pNext = nullptr,
@@ -965,6 +993,67 @@ void retire_swapchain_copy_resources(
             log_message(
                 "[OpenFrameGen] Frame copy initialization failed while "
                 "creating a fence.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+    }
+
+    if (enable_2x_resources) {
+        const VkCommandBufferAllocateInfo synthetic_command_info{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .commandPool = state.command_pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+
+        if (dispatch.allocate_command_buffers(
+                dispatch.device,
+                &synthetic_command_info,
+                &state.synthetic_command_buffer) != VK_SUCCESS ||
+            dispatch.set_device_loader_data == nullptr ||
+            dispatch.set_device_loader_data(
+                dispatch.device,
+                state.synthetic_command_buffer) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen] 2x initialization failed while "
+                "allocating the synthetic command buffer.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+
+        const VkSemaphoreCreateInfo semaphore_info{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+        };
+
+        if (dispatch.create_semaphore(
+                dispatch.device,
+                &semaphore_info,
+                nullptr,
+                &state.synthetic_acquire) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen] 2x initialization failed while "
+                "creating the synthetic acquire semaphore.");
+            destroy_copy_resources(dispatch, state);
+            return false;
+        }
+
+        const VkFenceCreateInfo synthetic_fence_info{
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+        };
+
+        if (dispatch.create_fence(
+                dispatch.device,
+                &synthetic_fence_info,
+                nullptr,
+                &state.synthetic_fence) != VK_SUCCESS) {
+            log_message(
+                "[OpenFrameGen] 2x initialization failed while "
+                "creating the synthetic submission fence.");
             destroy_copy_resources(dispatch, state);
             return false;
         }
@@ -1025,6 +1114,20 @@ void retire_swapchain_copy_resources(
     }
 
     state.copy_initialized = true;
+
+    if (state.interpolate_2x_requested) {
+        if (enable_2x_resources &&
+            state.passthrough != nullptr &&
+            state.passthrough->ready()) {
+            log_message(
+                "[OpenFrameGen] Vulkan 2x presentation path armed: "
+                "FIFO swapchain, transfer-dst and blit supported.");
+        } else {
+            log_message(
+                "[OpenFrameGen] Vulkan 2x presentation path unavailable; "
+                "continuing with normal presentation.");
+        }
+    }
 
     char message[256]{};
     std::snprintf(
