@@ -1472,6 +1472,114 @@ bool VulkanPassthroughPipeline::initialize(
         }
     }
 
+    for (auto& warp_output : warp_outputs_) {
+        const VkImageCreateInfo warp_info{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = kOutputFormat,
+            .extent = VkExtent3D{
+                output_extent_.width,
+                output_extent_.height,
+                1,
+            },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage =
+                VK_IMAGE_USAGE_STORAGE_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+
+        if (create_image_(
+                device_,
+                &warp_info,
+                nullptr,
+                &warp_output.image) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        VkMemoryRequirements warp_requirements{};
+        get_image_memory_requirements_(
+            device_,
+            warp_output.image,
+            &warp_requirements);
+
+        const std::uint32_t warp_memory_type =
+            find_memory_type(
+                warp_requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (warp_memory_type == UINT32_MAX) {
+            destroy();
+            return false;
+        }
+
+        const VkMemoryAllocateInfo warp_allocation_info{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .allocationSize = warp_requirements.size,
+            .memoryTypeIndex = warp_memory_type,
+        };
+
+        if (allocate_memory_(
+                device_,
+                &warp_allocation_info,
+                nullptr,
+                &warp_output.memory) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        if (bind_image_memory_(
+                device_,
+                warp_output.image,
+                warp_output.memory,
+                0) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+
+        const VkImageViewCreateInfo warp_view_info{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = warp_output.image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = kOutputFormat,
+            .components = VkComponentMapping{
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+                VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = VkImageSubresourceRange{
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                0,
+                1,
+                0,
+                1,
+            },
+        };
+
+        if (create_image_view_(
+                device_,
+                &warp_view_info,
+                nullptr,
+                &warp_output.view) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+    }
+
     const std::array<VkDescriptorSetLayout, 2> motion_layouts{
         motion_descriptor_set_layout_,
         motion_descriptor_set_layout_,
@@ -1569,6 +1677,126 @@ bool VulkanPassthroughPipeline::initialize(
             device_,
             static_cast<std::uint32_t>(motion_writes.size()),
             motion_writes.data(),
+            0,
+            nullptr);
+    }
+
+    const std::array<VkDescriptorSetLayout, 2> warp_layouts{
+        warp_descriptor_set_layout_,
+        warp_descriptor_set_layout_,
+    };
+    std::array<VkDescriptorSet, 2> warp_descriptor_sets{};
+
+    const VkDescriptorSetAllocateInfo warp_descriptor_allocate_info{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .descriptorPool = descriptor_pool_,
+        .descriptorSetCount =
+            static_cast<std::uint32_t>(warp_descriptor_sets.size()),
+        .pSetLayouts = warp_layouts.data(),
+    };
+
+    if (allocate_descriptor_sets_(
+            device_,
+            &warp_descriptor_allocate_info,
+            warp_descriptor_sets.data()) != VK_SUCCESS) {
+        destroy();
+        return false;
+    }
+
+    for (std::uint32_t index = 0;
+         index < warp_outputs_.size();
+         ++index) {
+        const std::uint32_t previous_index =
+            (index + 1u) %
+            static_cast<std::uint32_t>(history_.size());
+
+        auto& warp_output = warp_outputs_[index];
+        warp_output.descriptor_set =
+            warp_descriptor_sets[index];
+
+        const VkDescriptorImageInfo previous_descriptor{
+            .sampler = sampler_,
+            .imageView = history_[previous_index].view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+
+        const VkDescriptorImageInfo current_descriptor{
+            .sampler = sampler_,
+            .imageView = history_[index].view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+
+        const VkDescriptorImageInfo motion_descriptor{
+            .sampler = sampler_,
+            .imageView = motion_fields_[index].view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+
+        const VkDescriptorImageInfo warp_output_descriptor{
+            .sampler = VK_NULL_HANDLE,
+            .imageView = warp_output.view,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+
+        const std::array<VkWriteDescriptorSet, 4> warp_writes{
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = warp_output.descriptor_set,
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType =
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &previous_descriptor,
+                .pBufferInfo = nullptr,
+                .pTexelBufferView = nullptr,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = warp_output.descriptor_set,
+                .dstBinding = 1,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType =
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &current_descriptor,
+                .pBufferInfo = nullptr,
+                .pTexelBufferView = nullptr,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = warp_output.descriptor_set,
+                .dstBinding = 2,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType =
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &motion_descriptor,
+                .pBufferInfo = nullptr,
+                .pTexelBufferView = nullptr,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = warp_output.descriptor_set,
+                .dstBinding = 3,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .pImageInfo = &warp_output_descriptor,
+                .pBufferInfo = nullptr,
+                .pTexelBufferView = nullptr,
+            },
+        };
+
+        update_descriptor_sets_(
+            device_,
+            static_cast<std::uint32_t>(warp_writes.size()),
+            warp_writes.data(),
             0,
             nullptr);
     }
