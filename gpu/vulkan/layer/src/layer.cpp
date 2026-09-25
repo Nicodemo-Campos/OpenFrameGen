@@ -3121,6 +3121,8 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
     std::uint64_t generated_same_image_count = 0;
     std::uint64_t generated_record_failure_count = 0;
     std::uint64_t generated_submit_failure_count = 0;
+    std::uint64_t generated_source_replay_count = 0;
+    std::uint64_t generated_source_drop_count = 0;
 
     if (state != nullptr) {
         std::scoped_lock state_lock{state->mutex};
@@ -3205,6 +3207,10 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
             state->generated_record_failure_count;
         generated_submit_failure_count =
             state->generated_submit_failure_count;
+        generated_source_replay_count =
+            state->generated_source_replay_count;
+        generated_source_drop_count =
+            state->generated_source_drop_count;
 
         dispatch.destroy_swapchain(device, swapchain, allocator);
     } else {
@@ -3247,7 +3253,8 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
                 "generated/source=%.3f, acquire-miss=%llu, "
                 "bounded-acquire=%llu, acquire-timeout=%llu, "
                 "acquire-error=%llu, same-image=%llu, "
-                "record-fail=%llu, submit-fail=%llu.",
+                "record-fail=%llu, submit-fail=%llu, "
+                "source-replay=%llu, source-drop=%llu.",
                 static_cast<unsigned long long>(source_present_count),
                 static_cast<unsigned long long>(generated_present_count),
                 static_cast<unsigned long long>(
@@ -3266,7 +3273,11 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
                 static_cast<unsigned long long>(
                     generated_record_failure_count),
                 static_cast<unsigned long long>(
-                    generated_submit_failure_count));
+                    generated_submit_failure_count),
+                static_cast<unsigned long long>(
+                    generated_source_replay_count),
+                static_cast<unsigned long long>(
+                    generated_source_drop_count));
             log_message(stats_message);
         }
     }
