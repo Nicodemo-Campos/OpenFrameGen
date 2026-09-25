@@ -2,8 +2,67 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
+layout(constant_id = 0) const int scale_filter = 0;
+
 layout(set = 0, binding = 0) uniform sampler2D source_image;
 layout(set = 0, binding = 1, rgba8) writeonly uniform image2D output_image;
+
+float catmull_rom_weight(float distance) {
+    const float x = abs(distance);
+
+    if (x <= 1.0) {
+        return 1.5 * x * x * x -
+               2.5 * x * x +
+               1.0;
+    }
+
+    if (x < 2.0) {
+        return -0.5 * x * x * x +
+               2.5 * x * x -
+               4.0 * x +
+               2.0;
+    }
+
+    return 0.0;
+}
+
+vec4 sample_bicubic(vec2 uv) {
+    const ivec2 source_extent = textureSize(source_image, 0);
+    const vec2 source_position =
+        uv * vec2(source_extent) - vec2(0.5);
+    const ivec2 base = ivec2(floor(source_position));
+    const vec2 fraction = fract(source_position);
+
+    vec4 color = vec4(0.0);
+    float total_weight = 0.0;
+
+    for (int y = -1; y <= 2; ++y) {
+        const float weight_y =
+            catmull_rom_weight(float(y) - fraction.y);
+
+        for (int x = -1; x <= 2; ++x) {
+            const float weight_x =
+                catmull_rom_weight(float(x) - fraction.x);
+            const float weight = weight_x * weight_y;
+
+            const ivec2 coordinate = clamp(
+                base + ivec2(x, y),
+                ivec2(0),
+                source_extent - ivec2(1));
+
+            color +=
+                texelFetch(source_image, coordinate, 0) * weight;
+            total_weight += weight;
+        }
+    }
+
+    return total_weight != 0.0
+        ? color / total_weight
+        : texelFetch(
+            source_image,
+            clamp(base, ivec2(0), source_extent - ivec2(1)),
+            0);
+}
 
 void main() {
     const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -16,8 +75,10 @@ void main() {
     const vec2 uv =
         (vec2(pixel) + vec2(0.5)) / vec2(output_extent);
 
-    imageStore(
-        output_image,
-        pixel,
-        textureLod(source_image, uv, 0.0));
+    const vec4 color =
+        scale_filter == 1
+            ? sample_bicubic(uv)
+            : textureLod(source_image, uv, 0.0);
+
+    imageStore(output_image, pixel, color);
 }
