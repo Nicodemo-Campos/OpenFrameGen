@@ -182,6 +182,7 @@ bool VulkanPassthroughPipeline::initialize(
     float sharpening_strength,
     float timestamp_period_ns,
     std::uint32_t timestamp_valid_bits,
+    bool motion_validation,
     const std::vector<VkImage>& source_images) noexcept {
     destroy();
 
@@ -196,6 +197,7 @@ bool VulkanPassthroughPipeline::initialize(
     (void)sharpening_strength;
     (void)timestamp_period_ns;
     (void)timestamp_valid_bits;
+    (void)motion_validation;
     (void)source_images;
     return false;
 #else
@@ -218,6 +220,7 @@ bool VulkanPassthroughPipeline::initialize(
     sharpening_strength_ = sharpening_strength;
     timestamp_period_ns_ = timestamp_period_ns;
     timestamp_valid_bits_ = timestamp_valid_bits;
+    motion_validation_enabled_ = motion_validation;
 
     if (!load_functions(get_device_proc_addr)) {
         destroy();
@@ -538,6 +541,22 @@ bool VulkanPassthroughPipeline::initialize(
         return false;
     }
 
+    const std::uint32_t motion_validation_mode =
+        motion_validation_enabled_ ? 1u : 0u;
+
+    const VkSpecializationMapEntry motion_validation_entry{
+        .constantID = 0,
+        .offset = 0,
+        .size = sizeof(motion_validation_mode),
+    };
+
+    const VkSpecializationInfo motion_specialization{
+        .mapEntryCount = 1,
+        .pMapEntries = &motion_validation_entry,
+        .dataSize = sizeof(motion_validation_mode),
+        .pData = &motion_validation_mode,
+    };
+
     const VkPipelineShaderStageCreateInfo motion_stage_info{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .pNext = nullptr,
@@ -545,7 +564,7 @@ bool VulkanPassthroughPipeline::initialize(
         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
         .module = motion_shader_module,
         .pName = "main",
-        .pSpecializationInfo = nullptr,
+        .pSpecializationInfo = &motion_specialization,
     };
 
     const VkComputePipelineCreateInfo motion_pipeline_info{
