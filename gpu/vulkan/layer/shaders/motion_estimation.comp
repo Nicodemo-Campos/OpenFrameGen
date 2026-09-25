@@ -2,15 +2,60 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
+layout(constant_id = 0) const int synthetic_validation = 0;
+
 layout(set = 0, binding = 0) uniform sampler2D previous_frame;
 layout(set = 0, binding = 1) uniform sampler2D current_frame;
 layout(set = 0, binding = 2, rgba32f) writeonly uniform image2D motion_field;
 
 const int block_size = 8;
 const int search_radius = 4;
+const ivec2 validation_motion = ivec2(3, -2);
 
 float luminance(vec3 color) {
     return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+float synthetic_luminance(ivec2 coordinate) {
+    uint x = uint(coordinate.x + 4096);
+    uint y = uint(coordinate.y + 4096);
+    uint value =
+        x * 1664525u +
+        y * 1013904223u +
+        x * y * 747796405u;
+
+    value ^= value >> 16u;
+    value *= 2246822519u;
+    value ^= value >> 13u;
+
+    return float(value & 65535u) / 65535.0;
+}
+
+float previous_luminance(ivec2 coordinate) {
+    if (synthetic_validation != 0) {
+        return synthetic_luminance(coordinate);
+    }
+
+    return luminance(
+        texelFetch(
+            previous_frame,
+            coordinate,
+            0).rgb);
+}
+
+float current_luminance(ivec2 coordinate) {
+    if (synthetic_validation != 0) {
+        // Current(x) = Previous(x - motion), so the known motion is
+        // validation_motion when the matcher searches previous(x + offset).
+        return synthetic_luminance(
+            coordinate - validation_motion);
+    }
+
+    return luminance(
+        texelFetch(
+            current_frame,
+            coordinate,
+            0).rgb);
 }
 
 float block_error(ivec2 block_origin, ivec2 previous_offset) {
@@ -34,20 +79,9 @@ float block_error(ivec2 block_origin, ivec2 previous_offset) {
                     ivec2(0),
                     max_coordinate);
 
-            const float current_luma =
-                luminance(
-                    texelFetch(
-                        current_frame,
-                        current_coordinate,
-                        0).rgb);
-            const float previous_luma =
-                luminance(
-                    texelFetch(
-                        previous_frame,
-                        previous_coordinate,
-                        0).rgb);
-
-            error += abs(current_luma - previous_luma);
+            error += abs(
+                current_luminance(current_coordinate) -
+                previous_luminance(previous_coordinate));
         }
     }
 
