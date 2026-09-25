@@ -193,8 +193,14 @@ bool VulkanPassthroughPipeline::initialize(
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .magFilter = VK_FILTER_LINEAR,
-        .minFilter = VK_FILTER_LINEAR,
+        .magFilter =
+            filter_ == ScaleFilter::Bilinear
+                ? VK_FILTER_LINEAR
+                : VK_FILTER_NEAREST,
+        .minFilter =
+            filter_ == ScaleFilter::Bilinear
+                ? VK_FILTER_LINEAR
+                : VK_FILTER_NEAREST,
         .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
         .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
