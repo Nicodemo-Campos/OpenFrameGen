@@ -1088,6 +1088,28 @@ bool VulkanPassthroughPipeline::read_timing(
     return true;
 }
 
+bool VulkanPassthroughPipeline::frame_history_ready() const noexcept {
+    return history_frame_count_ >= history_.size();
+}
+
+std::uint64_t VulkanPassthroughPipeline::history_frame_count() const noexcept {
+    return history_frame_count_;
+}
+
+void VulkanPassthroughPipeline::commit_frame_history() noexcept {
+    if (!ready_ ||
+        history_write_index_ >= history_.size() ||
+        history_[history_write_index_].image == VK_NULL_HANDLE) {
+        return;
+    }
+
+    history_[history_write_index_].initialized = true;
+    ++history_frame_count_;
+    history_write_index_ =
+        (history_write_index_ + 1u) %
+        static_cast<std::uint32_t>(history_.size());
+}
+
 VkExtent2D VulkanPassthroughPipeline::output_extent() const noexcept {
     return output_extent_;
 }
@@ -1291,6 +1313,141 @@ bool VulkanPassthroughPipeline::record(
             timing_query_pool_,
             first_timing_query + 2);
     }
+
+    if (history_write_index_ >= history_.size()) {
+        return false;
+    }
+
+    const auto& history_target =
+        history_[history_write_index_];
+    const VkImage final_output =
+        sharpening_enabled()
+            ? slot.sharpened_output
+            : slot.output;
+
+    if (final_output == VK_NULL_HANDLE ||
+        history_target.image == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    std::array<VkImageMemoryBarrier, 2> history_prepare{
+        VkImageMemoryBarrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = final_output,
+            .subresourceRange = VkImageSubresourceRange{
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                0,
+                1,
+                0,
+                1,
+            },
+        },
+        VkImageMemoryBarrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask =
+                history_target.initialized
+                    ? VK_ACCESS_SHADER_READ_BIT
+                    : 0,
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout =
+                history_target.initialized
+                    ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                    : VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = history_target.image,
+            .subresourceRange = VkImageSubresourceRange{
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                0,
+                1,
+                0,
+                1,
+            },
+        },
+    };
+
+    cmd_pipeline_barrier_(
+        command_buffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        static_cast<std::uint32_t>(history_prepare.size()),
+        history_prepare.data());
+
+    const VkImageCopy history_copy{
+        .srcSubresource = VkImageSubresourceLayers{
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            0,
+            0,
+            1,
+        },
+        .srcOffset = VkOffset3D{0, 0, 0},
+        .dstSubresource = VkImageSubresourceLayers{
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            0,
+            0,
+            1,
+        },
+        .dstOffset = VkOffset3D{0, 0, 0},
+        .extent = VkExtent3D{
+            output_extent_.width,
+            output_extent_.height,
+            1,
+        },
+    };
+
+    cmd_copy_image_(
+        command_buffer,
+        final_output,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        history_target.image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &history_copy);
+
+    const VkImageMemoryBarrier history_ready{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = history_target.image,
+        .subresourceRange = VkImageSubresourceRange{
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            0,
+            1,
+            0,
+            1,
+        },
+    };
+
+    cmd_pipeline_barrier_(
+        command_buffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &history_ready);
 
     return true;
 }
