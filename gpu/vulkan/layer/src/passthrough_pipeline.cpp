@@ -686,6 +686,22 @@ bool VulkanPassthroughPipeline::initialize(
         return false;
     }
 
+    const std::uint32_t warp_validation_mode =
+        motion_validation_enabled_ ? 1u : 0u;
+
+    const VkSpecializationMapEntry warp_validation_entry{
+        .constantID = 0,
+        .offset = 0,
+        .size = sizeof(warp_validation_mode),
+    };
+
+    const VkSpecializationInfo warp_specialization{
+        .mapEntryCount = 1,
+        .pMapEntries = &warp_validation_entry,
+        .dataSize = sizeof(warp_validation_mode),
+        .pData = &warp_validation_mode,
+    };
+
     const VkPipelineShaderStageCreateInfo warp_stage_info{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .pNext = nullptr,
@@ -693,7 +709,7 @@ bool VulkanPassthroughPipeline::initialize(
         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
         .module = warp_shader_module,
         .pName = "main",
-        .pSpecializationInfo = nullptr,
+        .pSpecializationInfo = &warp_specialization,
     };
 
     const VkComputePipelineCreateInfo warp_pipeline_info{
