@@ -32,6 +32,53 @@ vec4 sample_bilinear(sampler2D image_sampler, vec2 pixel_position) {
     return mix(top, bottom, fraction.y);
 }
 
+bool inside_frame(vec2 position, ivec2 extent) {
+    return position.x >= 0.0 &&
+           position.y >= 0.0 &&
+           position.x <= float(extent.x - 1) &&
+           position.y <= float(extent.y - 1);
+}
+
+vec4 motion_sample(ivec2 coordinate, ivec2 field_extent) {
+    return texelFetch(
+        motion_field,
+        clamp(
+            coordinate,
+            ivec2(0),
+            field_extent - ivec2(1)),
+        0);
+}
+
+float motion_discontinuity(
+    ivec2 field_coordinate,
+    ivec2 field_extent,
+    vec2 center_motion) {
+    const vec2 left =
+        motion_sample(
+            field_coordinate + ivec2(-1, 0),
+            field_extent).xy;
+    const vec2 right =
+        motion_sample(
+            field_coordinate + ivec2(1, 0),
+            field_extent).xy;
+    const vec2 up =
+        motion_sample(
+            field_coordinate + ivec2(0, -1),
+            field_extent).xy;
+    const vec2 down =
+        motion_sample(
+            field_coordinate + ivec2(0, 1),
+            field_extent).xy;
+
+    return max(
+        max(
+            length(center_motion - left),
+            length(center_motion - right)),
+        max(
+            length(center_motion - up),
+            length(center_motion - down)));
+}
+
 void main() {
     const ivec2 output_coordinate =
         ivec2(gl_GlobalInvocationID.xy);
@@ -51,22 +98,29 @@ void main() {
             ivec2(0),
             field_extent - ivec2(1));
 
-    // Motion is stored in processed-frame pixels as current - previous.
-    const vec2 motion =
-        texelFetch(
-            motion_field,
+    const vec4 field_sample =
+        motion_sample(
             field_coordinate,
-            0).xy;
+            field_extent);
+
+    // Motion is stored in processed-frame pixels as current - previous.
+    const vec2 motion = field_sample.xy;
+    const float mean_match_error = field_sample.z;
 
     const vec2 output_position =
         vec2(output_coordinate);
 
     // At t=0.5, trace from the midpoint back toward the previous frame
-    // and forward toward the current frame, then blend the two samples.
+    // and forward toward the current frame.
     const vec2 previous_position =
         output_position - motion * interpolation_t;
     const vec2 current_position =
         output_position + motion * (1.0 - interpolation_t);
+
+    const bool previous_valid =
+        inside_frame(previous_position, output_extent);
+    const bool current_valid =
+        inside_frame(current_position, output_extent);
 
     const vec4 previous_color =
         sample_bilinear(
@@ -77,8 +131,60 @@ void main() {
             current_frame,
             current_position);
 
+    vec4 output_color;
+
+    if (previous_valid && !current_valid) {
+        output_color = previous_color;
+    } else if (!previous_valid && current_valid) {
+        output_color = current_color;
+    } else if (!previous_valid && !current_valid) {
+        output_color =
+            texelFetch(
+                current_frame,
+                output_coordinate,
+                0);
+    } else {
+        const float disagreement =
+            motion_discontinuity(
+                field_coordinate,
+                field_extent,
+                motion);
+
+        // High block-matching error or a sharp change in neighbouring
+        // vectors is a useful first-order indicator of an occlusion or
+        // motion boundary. In uncertain regions prefer the current frame
+        // instead of blindly averaging two potentially unrelated samples.
+        const float match_confidence =
+            1.0 - smoothstep(
+                0.02,
+                0.12,
+                mean_match_error);
+        const float continuity_confidence =
+            1.0 - smoothstep(
+                0.75,
+                3.0,
+                disagreement);
+        const float confidence =
+            clamp(
+                match_confidence * continuity_confidence,
+                0.0,
+                1.0);
+
+        const vec4 warped_midpoint =
+            mix(
+                previous_color,
+                current_color,
+                interpolation_t);
+
+        output_color =
+            mix(
+                current_color,
+                warped_midpoint,
+                confidence);
+    }
+
     imageStore(
         interpolated_frame,
         output_coordinate,
-        mix(previous_color, current_color, interpolation_t));
+        output_color);
 }
