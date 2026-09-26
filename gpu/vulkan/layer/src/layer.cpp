@@ -146,6 +146,20 @@ struct SwapchainState {
     std::uint64_t source_interval_max_ns = 0;
     double source_interval_mean_ns = 0.0;
     double source_interval_m2_ns2 = 0.0;
+    std::vector<std::uint64_t> source_interval_samples_ns;
+
+    enum class QueuedPresentKind : std::uint8_t {
+        generated,
+        source,
+        other,
+    };
+
+    struct QueuedPresentSample {
+        std::uint64_t timestamp_ns = 0;
+        QueuedPresentKind kind = QueuedPresentKind::other;
+    };
+
+    std::vector<QueuedPresentSample> queued_present_samples;
     std::uint64_t generated_present_count = 0;
     std::uint64_t generated_present_attempt_count = 0;
     std::uint64_t generated_acquire_miss_count = 0;
@@ -179,6 +193,25 @@ struct SwapchainState {
 
     ofg::FrameCadence2xPlanner cadence_2x;
 };
+
+constexpr std::size_t kPacingSampleLimit = 65'536;
+
+[[nodiscard]] std::uint64_t monotonic_now_ns() noexcept {
+    const auto now = std::chrono::steady_clock::now();
+    const auto count = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        now.time_since_epoch()).count();
+    return count > 0 ? static_cast<std::uint64_t>(count) : 0;
+}
+
+void record_queued_present(
+    SwapchainState& state,
+    SwapchainState::QueuedPresentKind kind) noexcept {
+    if (state.queued_present_samples.size() >= kPacingSampleLimit) {
+        return;
+    }
+
+    state.queued_present_samples.push_back({monotonic_now_ns(), kind});
+}
 
 std::mutex g_state_mutex;
 std::mutex g_log_mutex;
@@ -1882,6 +1915,9 @@ void retire_swapchain_copy_resources(
         .pResults = &generated_result,
     };
 
+    record_queued_present(
+        state,
+        SwapchainState::QueuedPresentKind::generated);
     const VkResult generated_queue_result =
         dispatch.queue_present(
             queue,
@@ -2051,6 +2087,9 @@ void retire_swapchain_copy_resources(
     replay_present.pWaitSemaphores = &replay_ready;
     replay_present.pImageIndices = &replay_index;
 
+    record_queued_present(
+        state,
+        SwapchainState::QueuedPresentKind::source);
     present_result =
         dispatch.queue_present(
             queue,
@@ -2205,6 +2244,9 @@ void retire_swapchain_copy_resources(
             .pResults = &release_result,
         };
 
+        record_queued_present(
+            state,
+            SwapchainState::QueuedPresentKind::other);
         dispatch.queue_present(
             queue,
             &release_present);
@@ -2298,6 +2340,9 @@ void retire_swapchain_copy_resources(
         .pResults = &generated_present_result,
     };
 
+    record_queued_present(
+        state,
+        SwapchainState::QueuedPresentKind::generated);
     dispatch.queue_present(
         queue,
         &generated_present);
@@ -2309,6 +2354,9 @@ void retire_swapchain_copy_resources(
     source_present.waitSemaphoreCount = 1;
     source_present.pWaitSemaphores = &source_ready;
 
+    record_queued_present(
+        state,
+        SwapchainState::QueuedPresentKind::source);
     present_result =
         dispatch.queue_present(
             queue,
@@ -2991,6 +3039,9 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
     std::uint64_t source_interval_max_ns = 0;
     double source_interval_mean_ns = 0.0;
     double source_interval_m2_ns2 = 0.0;
+    std::vector<std::uint64_t> source_interval_samples_ns;
+    std::vector<SwapchainState::QueuedPresentSample>
+        queued_present_samples;
     std::uint64_t generated_present_count = 0;
     std::uint64_t generated_present_attempt_count = 0;
     std::uint64_t generated_acquire_miss_count = 0;
@@ -3076,6 +3127,8 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         source_interval_max_ns = state->source_interval_max_ns;
         source_interval_mean_ns = state->source_interval_mean_ns;
         source_interval_m2_ns2 = state->source_interval_m2_ns2;
+        source_interval_samples_ns = state->source_interval_samples_ns;
+        queued_present_samples = state->queued_present_samples;
         generated_present_count = state->generated_present_count;
         generated_present_attempt_count =
             state->generated_present_attempt_count;
@@ -3242,6 +3295,145 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
                         max_ms,
                         max_ms - min_ms);
                     log_message(jitter_message);
+
+                    if (!source_interval_samples_ns.empty()) {
+                        auto percentile_ms =
+                            [&source_interval_samples_ns](double p) {
+                                auto samples = source_interval_samples_ns;
+                                std::sort(samples.begin(), samples.end());
+                                const double position =
+                                    p * static_cast<double>(samples.size() - 1u);
+                                const auto lower = static_cast<std::size_t>(
+                                    std::floor(position));
+                                const auto upper = static_cast<std::size_t>(
+                                    std::ceil(position));
+                                const double fraction = position -
+                                    static_cast<double>(lower);
+                                const double value =
+                                    static_cast<double>(samples[lower]) +
+                                    (static_cast<double>(samples[upper]) -
+                                     static_cast<double>(samples[lower])) *
+                                        fraction;
+                                return value / 1'000'000.0;
+                            };
+                        std::uint64_t over_25 = 0;
+                        std::uint64_t over_33 = 0;
+                        std::uint64_t over_50 = 0;
+                        std::uint64_t over_100 = 0;
+                        for (const auto sample : source_interval_samples_ns) {
+                            over_25 += sample > 25'000'000u;
+                            over_33 += sample > 33'333'333u;
+                            over_50 += sample > 50'000'000u;
+                            over_100 += sample > 100'000'000u;
+                        }
+
+                        char distribution_message[420]{};
+                        std::snprintf(
+                            distribution_message,
+                            sizeof(distribution_message),
+                            "[OpenFrameGen] Source pacing distribution "
+                            "(call timing, capped samples): samples=%llu, "
+                            "p50=%.3f ms, p95=%.3f ms, p99=%.3f ms, "
+                            "max=%.3f ms, over-25ms=%llu, over-33.3ms=%llu, "
+                            "over-50ms=%llu, over-100ms=%llu.",
+                            static_cast<unsigned long long>(
+                                source_interval_samples_ns.size()),
+                            percentile_ms(0.50),
+                            percentile_ms(0.95),
+                            percentile_ms(0.99),
+                            max_ms,
+                            static_cast<unsigned long long>(over_25),
+                            static_cast<unsigned long long>(over_33),
+                            static_cast<unsigned long long>(over_50),
+                            static_cast<unsigned long long>(over_100));
+                        log_message(distribution_message);
+                    }
+
+                    if (queued_present_samples.size() > 1u) {
+                        std::uint64_t generated_to_source = 0;
+                        std::uint64_t source_to_generated = 0;
+                        std::uint64_t other_transitions = 0;
+                        double generated_to_source_sum_ns = 0.0;
+                        double source_to_generated_sum_ns = 0.0;
+                        std::uint64_t generated_to_source_min_ns = UINT64_MAX;
+                        std::uint64_t source_to_generated_min_ns = UINT64_MAX;
+                        std::uint64_t generated_to_source_max_ns = 0;
+                        std::uint64_t source_to_generated_max_ns = 0;
+
+                        for (std::size_t i = 1; i < queued_present_samples.size(); ++i) {
+                            const auto& previous = queued_present_samples[i - 1u];
+                            const auto& current = queued_present_samples[i];
+                            if (current.timestamp_ns <= previous.timestamp_ns) {
+                                continue;
+                            }
+                            const auto interval_ns =
+                                current.timestamp_ns - previous.timestamp_ns;
+                            if (previous.kind ==
+                                    SwapchainState::QueuedPresentKind::generated &&
+                                current.kind ==
+                                    SwapchainState::QueuedPresentKind::source) {
+                                ++generated_to_source;
+                                generated_to_source_sum_ns +=
+                                    static_cast<double>(interval_ns);
+                                generated_to_source_min_ns = std::min(
+                                    generated_to_source_min_ns, interval_ns);
+                                generated_to_source_max_ns = std::max(
+                                    generated_to_source_max_ns, interval_ns);
+                            } else if (previous.kind ==
+                                           SwapchainState::QueuedPresentKind::source &&
+                                       current.kind ==
+                                           SwapchainState::QueuedPresentKind::generated) {
+                                ++source_to_generated;
+                                source_to_generated_sum_ns +=
+                                    static_cast<double>(interval_ns);
+                                source_to_generated_min_ns = std::min(
+                                    source_to_generated_min_ns, interval_ns);
+                                source_to_generated_max_ns = std::max(
+                                    source_to_generated_max_ns, interval_ns);
+                            } else {
+                                ++other_transitions;
+                            }
+                        }
+
+                        const auto average_ms = [](double sum_ns,
+                                                   std::uint64_t count) {
+                            return count == 0
+                                ? 0.0
+                                : sum_ns / static_cast<double>(count) /
+                                      1'000'000.0;
+                        };
+                        const auto min_ms = [](std::uint64_t value) {
+                            return value == UINT64_MAX
+                                ? 0.0
+                                : static_cast<double>(value) / 1'000'000.0;
+                        };
+                        char queued_message[520]{};
+                        std::snprintf(
+                            queued_message,
+                            sizeof(queued_message),
+                            "[OpenFrameGen] OFG queued present spacing "
+                            "(call timing, capped samples): events=%llu, "
+                            "generated->source=%llu avg=%.3f ms min=%.3f "
+                            "max=%.3f, source->generated=%llu avg=%.3f "
+                            "ms min=%.3f max=%.3f, other-transitions=%llu "
+                            "(not display refresh).",
+                            static_cast<unsigned long long>(
+                                queued_present_samples.size()),
+                            static_cast<unsigned long long>(generated_to_source),
+                            average_ms(generated_to_source_sum_ns,
+                                       generated_to_source),
+                            min_ms(generated_to_source_min_ns),
+                            static_cast<double>(generated_to_source_max_ns) /
+                                1'000'000.0,
+                            static_cast<unsigned long long>(source_to_generated),
+                            average_ms(source_to_generated_sum_ns,
+                                       source_to_generated),
+                            min_ms(source_to_generated_min_ns),
+                            static_cast<double>(source_to_generated_max_ns) /
+                                1'000'000.0,
+                            static_cast<unsigned long long>(other_transitions));
+                        log_message(queued_message);
+                    }
                 }
             }
         }
@@ -3394,6 +3586,10 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
                 std::min(state->source_interval_min_ns, interval_ns);
             state->source_interval_max_ns =
                 std::max(state->source_interval_max_ns, interval_ns);
+            if (state->source_interval_samples_ns.size() <
+                kPacingSampleLimit) {
+                state->source_interval_samples_ns.push_back(interval_ns);
+            }
 
             const double interval =
                 static_cast<double>(interval_ns);
