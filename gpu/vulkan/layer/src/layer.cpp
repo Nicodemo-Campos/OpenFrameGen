@@ -141,6 +141,11 @@ struct SwapchainState {
     std::uint64_t source_present_count = 0;
     std::uint64_t source_present_first_ns = 0;
     std::uint64_t source_present_last_ns = 0;
+    std::uint64_t source_interval_count = 0;
+    std::uint64_t source_interval_min_ns = UINT64_MAX;
+    std::uint64_t source_interval_max_ns = 0;
+    double source_interval_mean_ns = 0.0;
+    double source_interval_m2_ns2 = 0.0;
     std::uint64_t generated_present_count = 0;
     std::uint64_t generated_present_attempt_count = 0;
     std::uint64_t generated_acquire_miss_count = 0;
@@ -2981,6 +2986,11 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
     std::uint64_t source_present_count = 0;
     std::uint64_t source_present_first_ns = 0;
     std::uint64_t source_present_last_ns = 0;
+    std::uint64_t source_interval_count = 0;
+    std::uint64_t source_interval_min_ns = UINT64_MAX;
+    std::uint64_t source_interval_max_ns = 0;
+    double source_interval_mean_ns = 0.0;
+    double source_interval_m2_ns2 = 0.0;
     std::uint64_t generated_present_count = 0;
     std::uint64_t generated_present_attempt_count = 0;
     std::uint64_t generated_acquire_miss_count = 0;
@@ -3061,6 +3071,11 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         source_present_count = state->source_present_count;
         source_present_first_ns = state->source_present_first_ns;
         source_present_last_ns = state->source_present_last_ns;
+        source_interval_count = state->source_interval_count;
+        source_interval_min_ns = state->source_interval_min_ns;
+        source_interval_max_ns = state->source_interval_max_ns;
+        source_interval_mean_ns = state->source_interval_mean_ns;
+        source_interval_m2_ns2 = state->source_interval_m2_ns2;
         generated_present_count = state->generated_present_count;
         generated_present_attempt_count =
             state->generated_present_attempt_count;
@@ -3189,6 +3204,45 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
                     generated_rate,
                     queued_output_rate);
                 log_message(pacing_message);
+
+                if (source_interval_count > 0) {
+                    const double variance_ns2 =
+                        source_interval_count > 1
+                            ? source_interval_m2_ns2 /
+                                static_cast<double>(
+                                    source_interval_count - 1u)
+                            : 0.0;
+                    const double stddev_ms =
+                        std::sqrt(
+                            std::max(variance_ns2, 0.0)) /
+                        1'000'000.0;
+                    const double mean_ms =
+                        source_interval_mean_ns / 1'000'000.0;
+                    const double min_ms =
+                        static_cast<double>(
+                            source_interval_min_ns) /
+                        1'000'000.0;
+                    const double max_ms =
+                        static_cast<double>(
+                            source_interval_max_ns) /
+                        1'000'000.0;
+
+                    char jitter_message[360]{};
+                    std::snprintf(
+                        jitter_message,
+                        sizeof(jitter_message),
+                        "[OpenFrameGen] Source pacing spread: "
+                        "samples=%llu, mean=%.3f ms, stddev=%.3f ms, "
+                        "min=%.3f ms, max=%.3f ms, range=%.3f ms.",
+                        static_cast<unsigned long long>(
+                            source_interval_count),
+                        mean_ms,
+                        stddev_ms,
+                        min_ms,
+                        max_ms,
+                        max_ms - min_ms);
+                    log_message(jitter_message);
+                }
             }
         }
     }
@@ -3330,6 +3384,29 @@ VKAPI_ATTR VkResult VKAPI_CALL ofgQueuePresentKHR(
         if (state->source_present_first_ns == 0) {
             state->source_present_first_ns = present_time_ns;
         }
+
+        if (state->source_present_last_ns != 0 &&
+            present_time_ns > state->source_present_last_ns) {
+            const std::uint64_t interval_ns =
+                present_time_ns - state->source_present_last_ns;
+            ++state->source_interval_count;
+            state->source_interval_min_ns =
+                std::min(state->source_interval_min_ns, interval_ns);
+            state->source_interval_max_ns =
+                std::max(state->source_interval_max_ns, interval_ns);
+
+            const double interval =
+                static_cast<double>(interval_ns);
+            const double delta =
+                interval - state->source_interval_mean_ns;
+            state->source_interval_mean_ns +=
+                delta /
+                static_cast<double>(state->source_interval_count);
+            const double delta2 =
+                interval - state->source_interval_mean_ns;
+            state->source_interval_m2_ns2 += delta * delta2;
+        }
+
         state->source_present_last_ns = present_time_ns;
     }
 
