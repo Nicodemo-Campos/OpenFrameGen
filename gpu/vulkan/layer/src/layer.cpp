@@ -20,6 +20,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -160,6 +161,11 @@ struct SwapchainState {
     };
 
     std::vector<QueuedPresentSample> queued_present_samples;
+    std::uint64_t midpoint_wait_applied_count = 0;
+    std::uint64_t midpoint_wait_skipped_late_count = 0;
+    std::uint64_t midpoint_wait_skipped_invalid_count = 0;
+    std::uint64_t midpoint_wait_total_ns = 0;
+    std::uint64_t midpoint_wait_max_ns = 0;
     std::uint64_t generated_present_count = 0;
     std::uint64_t generated_present_attempt_count = 0;
     std::uint64_t generated_acquire_miss_count = 0;
@@ -414,6 +420,15 @@ template <typename Dispatchable>
 
 [[nodiscard]] bool configured_2x_interpolation() noexcept {
     const char* value = std::getenv("OFG_INTERPOLATE_2X");
+
+    return value != nullptr &&
+           (std::strcmp(value, "1") == 0 ||
+            std::strcmp(value, "true") == 0 ||
+            std::strcmp(value, "on") == 0);
+}
+
+[[nodiscard]] bool configured_midpoint_wait() noexcept {
+    const char* value = std::getenv("OFG_EXPERIMENTAL_MIDPOINT_WAIT");
 
     return value != nullptr &&
            (std::strcmp(value, "1") == 0 ||
@@ -2347,6 +2362,57 @@ void retire_swapchain_copy_resources(
         queue,
         &generated_present);
 
+    if (configured_midpoint_wait()) {
+        constexpr std::uint64_t min_valid_half_ns = 4'000'000u;
+        constexpr std::uint64_t max_valid_half_ns = 25'000'000u;
+        constexpr std::uint64_t max_wait_ns = 6'000'000u;
+        constexpr std::uint64_t spin_tail_ns = 250'000u;
+
+        const std::uint64_t generated_return_ns = monotonic_now_ns();
+        const bool valid_interval =
+            acquire_wait_ns >= min_valid_half_ns &&
+            acquire_wait_ns <= max_valid_half_ns;
+
+        if (!valid_interval || generated_return_ns == 0) {
+            ++state.midpoint_wait_skipped_invalid_count;
+        } else {
+            const std::uint64_t target_wait_ns =
+                std::min(acquire_wait_ns, max_wait_ns);
+            const std::uint64_t deadline_ns =
+                generated_return_ns > UINT64_MAX - target_wait_ns
+                    ? UINT64_MAX
+                    : generated_return_ns + target_wait_ns;
+            std::uint64_t now_ns = monotonic_now_ns();
+
+            if (now_ns >= deadline_ns) {
+                ++state.midpoint_wait_skipped_late_count;
+            } else {
+                while (deadline_ns - now_ns > spin_tail_ns) {
+                    const std::uint64_t remaining_ns = deadline_ns - now_ns;
+                    const auto sleep_ns = std::min<std::uint64_t>(
+                        remaining_ns - spin_tail_ns,
+                        1'000'000u);
+                    std::this_thread::sleep_for(
+                        std::chrono::nanoseconds(sleep_ns));
+                    now_ns = monotonic_now_ns();
+                }
+
+                while ((now_ns = monotonic_now_ns()) < deadline_ns) {
+                }
+
+                const std::uint64_t waited_ns =
+                    now_ns > generated_return_ns
+                        ? now_ns - generated_return_ns
+                        : 0;
+                ++state.midpoint_wait_applied_count;
+                state.midpoint_wait_total_ns += waited_ns;
+                state.midpoint_wait_max_ns = std::max(
+                    state.midpoint_wait_max_ns,
+                    waited_ns);
+            }
+        }
+    }
+
     const VkSemaphore source_ready =
         source_slot.source_present_ready;
     VkPresentInfoKHR source_present =
@@ -3042,6 +3108,11 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
     std::vector<std::uint64_t> source_interval_samples_ns;
     std::vector<SwapchainState::QueuedPresentSample>
         queued_present_samples;
+    std::uint64_t midpoint_wait_applied_count = 0;
+    std::uint64_t midpoint_wait_skipped_late_count = 0;
+    std::uint64_t midpoint_wait_skipped_invalid_count = 0;
+    std::uint64_t midpoint_wait_total_ns = 0;
+    std::uint64_t midpoint_wait_max_ns = 0;
     std::uint64_t generated_present_count = 0;
     std::uint64_t generated_present_attempt_count = 0;
     std::uint64_t generated_acquire_miss_count = 0;
@@ -3129,6 +3200,13 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
         source_interval_m2_ns2 = state->source_interval_m2_ns2;
         source_interval_samples_ns = state->source_interval_samples_ns;
         queued_present_samples = state->queued_present_samples;
+        midpoint_wait_applied_count = state->midpoint_wait_applied_count;
+        midpoint_wait_skipped_late_count =
+            state->midpoint_wait_skipped_late_count;
+        midpoint_wait_skipped_invalid_count =
+            state->midpoint_wait_skipped_invalid_count;
+        midpoint_wait_total_ns = state->midpoint_wait_total_ns;
+        midpoint_wait_max_ns = state->midpoint_wait_max_ns;
         generated_present_count = state->generated_present_count;
         generated_present_attempt_count =
             state->generated_present_attempt_count;
@@ -3434,6 +3512,37 @@ VKAPI_ATTR void VKAPI_CALL ofgDestroySwapchainKHR(
                             static_cast<unsigned long long>(other_transitions));
                         log_message(queued_message);
                     }
+
+                    char midpoint_wait_message[360]{};
+                    const double midpoint_wait_total_ms =
+                        static_cast<double>(midpoint_wait_total_ns) /
+                        1'000'000.0;
+                    const double midpoint_wait_avg_ms =
+                        midpoint_wait_applied_count == 0
+                            ? 0.0
+                            : midpoint_wait_total_ms /
+                                  static_cast<double>(
+                                      midpoint_wait_applied_count);
+                    std::snprintf(
+                        midpoint_wait_message,
+                        sizeof(midpoint_wait_message),
+                        "[OpenFrameGen] Experimental midpoint wait "
+                        "(call timing): enabled=%s, applied=%llu, "
+                        "skipped-late=%llu, skipped-invalid=%llu, "
+                        "total-wait=%.3f ms, avg-wait=%.3f ms, "
+                        "max-wait=%.3f ms.",
+                        configured_midpoint_wait() ? "yes" : "no",
+                        static_cast<unsigned long long>(
+                            midpoint_wait_applied_count),
+                        static_cast<unsigned long long>(
+                            midpoint_wait_skipped_late_count),
+                        static_cast<unsigned long long>(
+                            midpoint_wait_skipped_invalid_count),
+                        midpoint_wait_total_ms,
+                        midpoint_wait_avg_ms,
+                        static_cast<double>(midpoint_wait_max_ns) /
+                            1'000'000.0);
+                    log_message(midpoint_wait_message);
                 }
             }
         }
